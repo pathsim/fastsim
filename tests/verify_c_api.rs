@@ -16,6 +16,7 @@ use fastsim::codegen::{CodegenError, CodegenOptions};
 use fastsim::connection::Connection;
 use fastsim::ir::builder::module_from_sim;
 use fastsim::simulation::Simulation;
+use fastsim::utils::logger::Logger;
 use fastsim::utils::portreference::PortReference;
 
 fn conn(
@@ -60,6 +61,7 @@ fn verify_c_passes_on_matching_model() {
         &mut reference,
         &CodegenOptions::default(),
         &VerifyCOptions { duration: 2.0, dt: 1e-3, ..Default::default() },
+        &Logger::disabled(),
     )
     .expect("verification runs");
     assert!(
@@ -88,6 +90,7 @@ fn verify_c_fails_on_mismatched_reference() {
         &mut reference,
         &CodegenOptions::default(),
         &VerifyCOptions::default(),
+        &Logger::disabled(),
     )
     .expect_err("state-count mismatch must be rejected");
     assert!(matches!(err, CodegenError::Verify(_)), "got {err:?}");
@@ -108,6 +111,7 @@ fn verify_c_fails_on_mismatched_reference() {
         &mut reference,
         &CodegenOptions::default(),
         &VerifyCOptions { duration: 1.0, dt: 1e-2, ..Default::default() },
+        &Logger::disabled(),
     )
     .expect("verification runs");
     assert!(!report.passed, "diverging dynamics must fail verification");
@@ -124,7 +128,7 @@ fn verify_c_rejects_adaptive_solver() {
         solver: fastsim::codegen::SolverChoice::by_name("RKBS32").expect("adaptive tableau"),
         ..Default::default()
     };
-    let err = verify_c(&module, &mut reference, &cg, &VerifyCOptions::default())
+    let err = verify_c(&module, &mut reference, &cg, &VerifyCOptions::default(), &Logger::disabled())
         .expect_err("adaptive tableaus are out of scope");
     assert!(matches!(err, CodegenError::Verify(ref m) if m.contains("adaptive")), "got {err:?}");
 }

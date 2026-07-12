@@ -18,7 +18,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::codegen::{
-    generate, CodegenOptions, GeneratedFile, Layout, ModelApi, Numeric, Reductions,
+    CodegenOptions, GeneratedFile, Layout, ModelApi, Numeric, Reductions,
     SolverChoice, Structure,
 };
 
@@ -124,14 +124,16 @@ pub(crate) fn options_from_strs(
 
 /// Lower `module` with `opts` and box the result into a Python dict
 /// `{file name: source}`, preserving emission order. `Unsupported` constructs
-/// surface as `RuntimeError`.
+/// surface as `RuntimeError`. Logs the configuration and the emitted files on
+/// `log` (`Simulation.to_c` passes the simulation's logger).
 pub(crate) fn generate_to_dict<'py>(
     py: Python<'py>,
     module: &crate::ir::schema::Module,
     opts: &CodegenOptions,
+    log: &crate::utils::logger::Logger,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let files: Vec<GeneratedFile> =
-        generate(module, opts).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let files: Vec<GeneratedFile> = crate::codegen::generate_logged(module, opts, log)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     let out = PyDict::new(py);
     for f in files {
         out.set_item(f.name, f.contents)?;
@@ -226,7 +228,10 @@ pub fn generate_c<'py>(
     let module: crate::ir::schema::Module = serde_json::from_str(ir_json)
         .map_err(|e| PyValueError::new_err(format!("invalid IR JSON: {e}")))?;
     let opts = options_from_strs(numeric, reductions, structure, layout, solver, api, scaffold, trace, a2l)?;
-    generate_to_dict(py, &module, &opts)
+    // No simulation (and thus no per-sim log flag) here — log like the
+    // Simulation default (log=True).
+    let log = crate::utils::logger::Logger::new(true, "");
+    generate_to_dict(py, &module, &opts, &log)
 }
 
 /// Locate the C compiler ``Simulation.verify_c`` would use, or ``None``.

@@ -462,11 +462,13 @@ impl PySimulation {
         a2l: bool,
     ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         use super::codegen::{generate_to_dict, options_from_strs};
+        let sim = self.inner.borrow();
         #[allow(clippy::needless_borrow)]
-        let module = crate::ir::builder::module_from_sim(&self.inner.borrow(), name);
+        let module = crate::ir::builder::module_from_sim(&sim, name);
+        let log = sim.logger.clone();
         let opts =
             options_from_strs(numeric, reductions, structure, layout, solver, api, scaffold, trace, a2l)?;
-        generate_to_dict(py, &module, &opts)
+        generate_to_dict(py, &module, &opts, &log)
     }
 
     /// Software-in-the-loop verification of the generated C (see `to_c`).
@@ -522,8 +524,10 @@ impl PySimulation {
     ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         use super::codegen::options_from_strs;
         use crate::codegen::verify::{verify_c, VerifyCOptions};
+        let sim = self.inner.borrow();
         #[allow(clippy::needless_borrow)]
-        let module = crate::ir::builder::module_from_sim(&self.inner.borrow(), name);
+        let module = crate::ir::builder::module_from_sim(&sim, name);
+        let log = sim.logger.clone();
         let cg = options_from_strs(numeric, reductions, structure, layout, solver, "struct", false, false, false)?;
         let mut reference = crate::compile::compile(&module).map_err(|e| {
             PyValueError::new_err(format!(
@@ -533,7 +537,7 @@ impl PySimulation {
         let vopts = VerifyCOptions { duration, dt, atol, rtol, keep_build };
         // Pure Rust + an external compiler process — release the GIL throughout.
         let report = py
-            .detach(move || verify_c(&module, &mut reference, &cg, &vopts))
+            .detach(move || verify_c(&module, &mut reference, &cg, &vopts, &log))
             .map_err(|e| match e {
                 crate::codegen::CodegenError::Verify(msg) => {
                     pyo3::exceptions::PyRuntimeError::new_err(msg)

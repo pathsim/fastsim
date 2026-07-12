@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{file_base, generate, struct_layout, CodegenError, CodegenOptions, VarKind};
+use super::{file_base, struct_layout, CodegenError, CodegenOptions, VarKind};
 use crate::compile::CompiledSimulation;
 use crate::ir::schema::Module;
 
@@ -169,6 +169,7 @@ pub fn verify_c(
     reference: &mut CompiledSimulation,
     cg: &CodegenOptions,
     opts: &VerifyCOptions,
+    log: &crate::utils::logger::Logger,
 ) -> Result<VerifyCReport, CodegenError> {
     let tableau = cg.solver.tableau();
     if cg.numeric.frac().is_some() {
@@ -212,9 +213,14 @@ pub fn verify_c(
         .map(|v| v.name.clone())
         .collect();
 
-    let files = generate(module, cg)?;
     let n_steps = (opts.duration / opts.dt).round().max(1.0) as usize;
     let n = layout.n_state;
+    log.info(&format!(
+        "VERIFY_C (model: {}, solver: {}, duration: {}, dt: {}, steps: {}, states: {})",
+        module.name, tableau.name, opts.duration, opts.dt, n_steps, n
+    ));
+
+    let files = crate::codegen::generate_logged(module, cg, log)?;
 
     let compiler = find_compiler().ok_or_else(|| {
         verr(
@@ -271,6 +277,7 @@ pub fn verify_c(
         .collect();
     args.push("main.c".into());
     args.extend(["-std=c99", "-O2", "-o", "verify.exe", "-lm"].iter().map(|s| s.to_string()));
+    let t_compile = std::time::Instant::now();
     let out = cc_command_in(&compiler, &dir)
         .args(&args)
         .output()
@@ -282,6 +289,11 @@ pub fn verify_c(
             String::from_utf8_lossy(&out.stderr)
         )));
     }
+    log.info(&format!(
+        "VERIFY_C COMPILE (cc: {compiler}) in {:.1} ms",
+        t_compile.elapsed().as_secs_f64() * 1000.0
+    ));
+    let t_run = std::time::Instant::now();
     let run = Command::new(dir.join("verify.exe"))
         .output()
         .map_err(|e| verr(format!("run harness (kept in {}): {e}", dir.display())))?;
@@ -345,14 +357,32 @@ pub fn verify_c(
         None
     };
 
+    let passed = max_scaled <= 1.0;
+    let worst_state =
+        worst.map(|(i, _)| state_names.get(i).cloned().unwrap_or_else(|| format!("x[{i}]")));
+    let worst_time = worst.map(|(_, t)| t).unwrap_or(0.0);
+    let summary = format!(
+        "(max scaled error: {:.2e}, worst state: {}, at t: {:.6}, samples: {}) in {:.1} ms",
+        max_scaled,
+        worst_state.as_deref().unwrap_or("-"),
+        worst_time,
+        n_steps + 1,
+        t_run.elapsed().as_secs_f64() * 1000.0
+    );
+    if passed {
+        log.info(&format!("VERIFY_C PASSED {summary}"));
+    } else {
+        log.warning(&format!("VERIFY_C FAILED {summary}"));
+    }
+
     Ok(VerifyCReport {
-        passed: max_scaled <= 1.0,
+        passed,
         compiler,
         n_steps,
         n_states: n,
         max_scaled_error: max_scaled,
-        worst_state: worst.map(|(i, _)| state_names.get(i).cloned().unwrap_or_else(|| format!("x[{i}]"))),
-        worst_time: worst.map(|(_, t)| t).unwrap_or(0.0),
+        worst_state,
+        worst_time,
         files: files.iter().map(|f| f.name.clone()).collect(),
         build_dir,
     })

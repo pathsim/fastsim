@@ -48,6 +48,36 @@ pub use system::{
 };
 use templates::render;
 
+/// [`generate`] with engine logging: the full configuration up front, the
+/// emitted files with sizes and wall time after — on the same channel and in
+/// the same format the simulation itself logs (`Simulation.to_c` passes the
+/// simulation's logger, so `log=False` silences codegen too).
+pub fn generate_logged(
+    module: &crate::ir::schema::Module,
+    opts: &CodegenOptions,
+    log: &crate::utils::logger::Logger,
+) -> Result<Vec<GeneratedFile>, CodegenError> {
+    log.info(&format!("CODEGEN (model: {}, {})", module.name, opts.describe()));
+    let t0 = std::time::Instant::now();
+    let files = generate(module, opts)?;
+    let listing = files
+        .iter()
+        .map(|f| format!("{}: {}", f.name, fmt_kb(f.contents.len())))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let total: usize = files.iter().map(|f| f.contents.len()).sum();
+    log.info(&format!(
+        "CODEGEN FILES ({listing}) -> {} in {:.1} ms",
+        fmt_kb(total),
+        t0.elapsed().as_secs_f64() * 1000.0
+    ));
+    Ok(files)
+}
+
+fn fmt_kb(bytes: usize) -> String {
+    format!("{:.1} kB", bytes as f64 / 1000.0)
+}
+
 /// One emitted source artifact: a file name (e.g. `"model.c"`) and its contents.
 /// [`generate`] returns the full set a build needs; the caller writes each to
 /// disk (or feeds them to a compiler) under its `name`.
@@ -92,6 +122,36 @@ pub struct CodegenOptions {
     /// natural-alignment layout shared by mainstream ABIs; 64-bit `size_t`
     /// assumed. Off by default.
     pub a2l: bool,
+}
+
+impl CodegenOptions {
+    /// One-line key/value summary of the full configuration, for logging.
+    fn describe(&self) -> String {
+        let mut s = format!(
+            "numeric: {}, solver: {}, structure: {}, layout: {}, reductions: {}",
+            self.numeric.spec(),
+            self.solver.tableau().name,
+            match self.structure {
+                Structure::Hierarchical => "hierarchical",
+                Structure::Flat => "flat",
+            },
+            match self.layout {
+                Layout::Compact => "compact",
+                Layout::Library => "library",
+            },
+            match self.reductions {
+                Reductions::Unrolled => "unrolled",
+                Reductions::Vectorized => "vectorized",
+            },
+        );
+        for (on, name) in [(self.scaffold, "scaffold"), (self.trace, "trace"), (self.a2l, "a2l")] {
+            if on {
+                s.push_str(", ");
+                s.push_str(name);
+            }
+        }
+        s
+    }
 }
 
 /// The public shape of the generated model.
@@ -148,6 +208,14 @@ impl Numeric {
         match self {
             Numeric::Fixed { frac } => Some(frac),
             _ => None,
+        }
+    }
+    /// The option spelling for logs and messages (`"double"`, `"q16.16"`).
+    pub fn spec(self) -> String {
+        match self {
+            Numeric::Double => "double".into(),
+            Numeric::Float => "float".into(),
+            Numeric::Fixed { frac } => format!("q{}.{}", 32 - frac, frac),
         }
     }
 }

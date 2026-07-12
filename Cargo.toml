@@ -1,6 +1,6 @@
 [package]
 name = "fastsim"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2021"
 description = "A fast, Rust-based block-diagram system simulation framework — drop-in replacement for pathsim"
 license = "PolyForm-Noncommercial-1.0.0"
@@ -16,7 +16,7 @@ libm = "0.2"
 num-complex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-pyo3 = { version = "0.28", features = ["extension-module", "num-complex"], optional = true }
+pyo3 = { version = "0.29", features = ["extension-module", "num-complex"], optional = true }
 # Structural code emission (the `codegen` module) is driven by Jinja templates;
 # minijinja is the pure-Rust Jinja2 engine. Optional so the default/WASM build
 # stays lean — the recursive op->expression lowering is plain Rust either way.
