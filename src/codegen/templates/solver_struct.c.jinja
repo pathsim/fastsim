@@ -1,0 +1,8 @@
+{#
+  Struct-API Library layout: the generic fixed-step integrator, split out from
+  the model. Includes "solver.h" (which pulls in "model.h" for `model_t`,
+  `model_deriv` / `model_outputs`, and `model_handle_events`).
+-#}
+#include "{{ file_base }}_solver.h"
+
+{% include "solver_impl_struct.c" %}

@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (ubuntu, py3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version consistency
+        shell: bash
+        run: |
+          CARGO=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          PYPROJECT=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+          INIT=$(grep -m1 '__version__ = ' python/fastsim/__init__.py | cut -d'"' -f2)
+          echo "Cargo=$CARGO  pyproject=$PYPROJECT  __init__=$INIT"
+          if [ "$CARGO" != "$PYPROJECT" ] || [ "$CARGO" != "$INIT" ]; then
+            echo "::error::version skew across Cargo.toml / pyproject.toml / __init__.py"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (lint gate)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --all-targets --features codegen
+        env:
+          FASTSIM_REQUIRE_CC: "1"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin pytest numpy scipy pathsim ziglang
+
+      - name: Build and install fastsim
+        run: pip install -e . --no-build-isolation
+
+      - name: Run Python tests
+        run: python -m pytest tests/python/ -q --tb=short
+        env:
+          FASTSIM_REQUIRE_CC: "1"
+          PATHSIM_REQUIRED: "1"

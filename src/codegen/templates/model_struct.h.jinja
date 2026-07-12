@@ -1,0 +1,92 @@
+{#
+  Public header for the struct ("rtModel") API: the dimensions, the
+  `<name>_t` instance struct (so callers can allocate one), the addressable
+  `<NAME>_SIG_*` ids, and the externally-linked entry points. The internal
+  `<name>_step` / `<name>_substep` stay file-static in the `.c`; the block
+  drivers `<name>_outputs` / `<name>_deriv` are external only under Library.
+-#}
+#ifndef FASTSIM_{{ name | upper }}_MODEL_H
+#define FASTSIM_{{ name | upper }}_MODEL_H
+
+#include <math.h>
+#include <stddef.h>
+#include <stdint.h>
+
+/* Shared runtime helpers: guarded so two generated models can be #included
+   into one translation unit (the HIL plant+controller case) without a
+   duplicate-definition error. */
+#ifndef FASTSIM_RT_HELPERS
+#define FASTSIM_RT_HELPERS
+#define FASTSIM_EQ_TOL {{ eq_tol }}
+/* Stateless PRNG helper for traceable noise sources (UnaryOp::RandUniform). */
+{{ rng_helper }}
+/* Digamma helper (derivative of lgamma/tgamma; used by <name>_jvp). */
+{{ digamma_helper }}
+#endif /* FASTSIM_RT_HELPERS */
+#define {{ name | upper }}_N_STATE {{ n_state }}
+{% if fixed_frac is not none %}
+
+/* Fixed-point Q{{ 31 - fixed_frac }}.{{ fixed_frac }} on int32_t: resolution 2^-{{ fixed_frac }},
+   range +-2^{{ 31 - fixed_frac }}. All signals, parameters, time and dt are raw Q values;
+   convert at the boundary with these macros (host/tooling side only — the
+   model itself never touches floating point). */
+#define {{ name | upper }}_Q_FRAC {{ fixed_frac }}
+#define {{ name | upper }}_Q_ONE (1 << {{ fixed_frac }})
+#define {{ name | upper }}_Q_FROM_DOUBLE(x) ((int32_t)((x) * (double)(1 << {{ fixed_frac }}) + ((x) >= 0 ? 0.5 : -0.5)))
+#define {{ name | upper }}_Q_TO_DOUBLE(q) ((double)(q) / (double)(1 << {{ fixed_frac }}))
+{% endif %}
+
+typedef struct {
+    {{ real }} time;        /* simulation time */
+{% if n_state > 0 %}
+    {{ real }} x[{{ n_state }}];   /* continuous states */
+{% endif %}
+{% if has_sig %}
+    {{ real }} sig[{{ n_sig }}];   /* block output signals */
+{% endif %}
+{% if has_param %}
+    {{ real }} p[{{ n_param }}];   /* tunable parameters */
+{% endif %}
+{% if has_input %}
+    {{ real }} u[{{ n_input }}];   /* external inputs (open system) */
+{% endif %}
+{% if has_mem %}
+    {{ real }} mem[{{ n_mem }}];   /* discrete memory */
+{% endif %}
+{% for f in event_fields %}
+{{ f }}
+{% endfor %}
+{% for f in solver_fields %}
+{{ f }}
+{% endfor %}
+} {{ name }}_t;
+
+/* Addressable signals: states (read/write), outputs (read), params (read/write). */
+enum {
+{% for s in sigs %}
+    {{ name | upper }}_SIG_{{ s.name }} = {{ s.id }}u,
+{% endfor %}
+    {{ name | upper }}_SIG_COUNT = {{ sigs | length }}u
+};
+
+void {{ name }}_init({{ name }}_t * restrict m);
+{% if has_events %}
+void {{ name }}_handle_events({{ name }}_t * restrict m, {{ real }} dt);
+{% endif %}
+void {{ name }}_run({{ name }}_t * restrict m, {{ real }} t_end, {{ real }} dt);
+/* Advance by exactly ONE step of `dt` (events + step + output refresh).
+   Fixed work per call — no time loops, no allocation — for periodic
+   tasks/ISRs at rate 1/dt. N calls compose exactly to run(t0 + N*dt, dt). */
+void {{ name }}_step({{ name }}_t * restrict m, {{ real }} dt);
+{{ real }} {{ name }}_get_signal(const {{ name }}_t * restrict m, uint16_t id);
+int {{ name }}_set_signal({{ name }}_t * restrict m, uint16_t id, {{ real }} value);
+{% if has_jvp %}
+/* Directional derivative (exact, forward-mode AD): tangents `d_sig`/`d_dxdt`
+   from seeds `x_seed` (states), `u_seed` (inputs), `p_seed` (parameters). */
+void {{ name }}_jvp({{ name }}_t * restrict m,
+        const {{ real }}* restrict x_seed, const {{ real }}* restrict u_seed,
+        const {{ real }}* restrict p_seed, {{ real }}* restrict d_sig,
+        {{ real }}* restrict d_dxdt);
+{% endif %}
+
+#endif /* FASTSIM_{{ name | upper }}_MODEL_H */

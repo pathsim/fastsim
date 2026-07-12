@@ -1,0 +1,37 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "fastsim"
+# Keep in sync with Cargo.toml `version` and python/fastsim/__init__.py
+# `__version__` — CI's "Version consistency" gate fails on drift, and the release
+# workflow rewrites all three from the git tag.
+version = "0.18.0"
+description = "A fast, Rust-based block-diagram system simulation framework — drop-in replacement for pathsim"
+requires-python = ">=3.8"
+license = {text = "PolyForm-Noncommercial-1.0.0"}
+# Mirror pathsim's runtime deps so fastsim is a true drop-in: micropip/pip
+# resolve them on install (matplotlib for Scope/Spectrum .plot(), numpy for
+# block I/O, scipy for pathsim-compatible user code). Declaring them here puts
+# them in the wheel's Requires-Dist, so they load up front (no first-run stall
+# from a lazy import after init).
+dependencies = [
+    "numpy>=1.15",
+    "scipy>=1.2",
+    "matplotlib>=3.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+python_files = "test_*.py"
+
+[tool.maturin]
+# `codegen` bundles the C code generator into the wheel, so `sim.to_c()` and
+# `fastsim.ir.Module.to_c()` work out of the box (no separate extension).
+# `fmi` adds FMU import/export (`sim.to_fmu()`); it pulls in native-only deps
+# (libloading/zip/tempfile), so it is in the native wheel but excluded from the
+# WASM/Pyodide build (which sets its own feature list).
+features = ["python", "codegen", "fmi", "parallel"]
+module-name = "fastsim._fastsim"
+python-source = "python"

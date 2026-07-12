@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  PYODIDE_VERSION: "0.29.4"
+  EMSCRIPTEN_VERSION: "4.0.9"
+
+permissions:
+  contents: write
+
+jobs:
+  pyodide-wheel:
+    name: Build Pyodide wheel + release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Pinned nightly: pyodide-build's xbuildenv passes `-Z emscripten-wasm-eh`,
+      # which newer nightlies no longer accept.
+      - name: Install Rust nightly (build-std + emscripten target)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-06-01
+          components: rust-src
+          targets: wasm32-unknown-emscripten
+
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSCRIPTEN_VERSION }}
+
+      - name: Install pyodide-build
+        run: pip install pyodide-build
+
+      - name: Build wheel
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-06-01
+        # `bash` (not ./): must not depend on the exec bit surviving the export.
+        run: bash ./scripts/build_pyodide.sh
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-pyodide-${{ env.PYODIDE_VERSION }}
+          path: dist/*wasm32*.whl
+
+      - name: Create GitHub release with wheel
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*wasm32*.whl

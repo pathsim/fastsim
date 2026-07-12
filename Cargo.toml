@@ -1,0 +1,99 @@
+[package]
+name = "fastsim"
+version = "0.18.0"
+edition = "2021"
+description = "A fast, Rust-based block-diagram system simulation framework — drop-in replacement for pathsim"
+license = "PolyForm-Noncommercial-1.0.0"
+
+[lib]
+name = "fastsim"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+faer = { version = "0.24", default-features = false, features = ["std", "linalg", "sparse-linalg"] }
+smallvec = "1.13"
+libm = "0.2"
+num-complex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+pyo3 = { version = "0.28", features = ["extension-module", "num-complex"], optional = true }
+# Structural code emission (the `codegen` module) is driven by Jinja templates;
+# minijinja is the pure-Rust Jinja2 engine. Optional so the default/WASM build
+# stays lean — the recursive op->expression lowering is plain Rust either way.
+minijinja = { version = "2", optional = true }
+libloading = { version = "0.8", optional = true }
+roxmltree = { version = "0.20", optional = true }
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+tempfile = { version = "3", optional = true }
+thiserror = "2"
+# Data-parallel batch runs (parameter sweeps / Monte Carlo). Optional and in the
+# default feature set so native builds (and the test gate) get it, while the
+# WASM/Pyodide build (`--no-default-features`) stays single-threaded.
+rayon = { version = "1", optional = true }
+[dev-dependencies]
+approx = "0.5"
+criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
+
+[[bench]]
+name = "event_loop"
+harness = false
+
+[[bench]]
+name = "lstsq_micro"
+harness = false
+
+[[bench]]
+name = "jit_tape_micro"
+harness = false
+
+[[bench]]
+name = "ops_tape_vs_native"
+harness = false
+
+[[bench]]
+name = "sim_tape_vs_native"
+harness = false
+
+[[bench]]
+name = "statespace_matvec"
+harness = false
+
+[[bench]]
+name = "newton_cache"
+harness = false
+
+[[bench]]
+name = "stiff_statespace"
+harness = false
+
+[[bench]]
+name = "stiff_compiled"
+harness = false
+
+[[bench]]
+name = "stiff_sparse"
+harness = false
+
+[[bench]]
+name = "sparse_jacobian_system"
+harness = false
+
+[features]
+default = ["fmi", "parallel"]
+python = ["pyo3"]
+# Multi-threaded batch API (`CompiledSimulation::run_batch`) via rayon.
+parallel = ["dep:rayon"]
+# FMI 3.0 import (FMU loading). Pulls in runtime dynamic-library loading
+# (libloading) and filesystem access, so it is excluded from WASM/Pyodide builds.
+fmi = ["dep:libloading", "dep:roxmltree", "dep:zip", "dep:tempfile"]
+# C99 code generation from the IR (the `codegen` module + its Python surface
+# `sim.to_c()` / `generate_c`). Pulls in the minijinja template engine; off by
+# default so a plain runtime build (and WASM) does not carry it.
+codegen = ["dep:minijinja"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+# Strip symbols from release wheels — smaller artifacts, no runtime effect
+# (issue #47).
+strip = "symbols"

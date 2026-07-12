@@ -1,0 +1,17 @@
+{#
+  Struct-API Library layout: interface for the integrator's translation unit.
+  Pulls in "model.h" for `model_t` and the dimensions, and declares the model
+  driver functions the integrator calls (`model_deriv`, and `model_outputs` for
+  the post-step refresh), externally linked from `model.c` under Library.
+-#}
+#ifndef FASTSIM_{{ name | upper }}_SOLVER_H
+#define FASTSIM_{{ name | upper }}_SOLVER_H
+
+#include "{{ file_base }}.h"
+
+{% if has_sig %}
+void {{ name }}_outputs({{ name }}_t * restrict m);
+{% endif %}
+void {{ name }}_deriv({{ name }}_t * restrict m, {{ real }}* restrict dxdt);
+
+#endif /* FASTSIM_{{ name | upper }}_SOLVER_H */

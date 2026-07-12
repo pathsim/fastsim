@@ -1,0 +1,22 @@
+{#
+  One lowered region as a C function. The op->expression lowering happens in
+  Rust (the `Target` trait); this template only assembles the structural shell:
+  the fixed signature, one `const T vN = <expr>;` per SSA op, then the writes
+  into `out[]` (in declaration order, matching `ir::eval::eval_region`).
+-#}
+{% if doc %}
+{{ doc }}
+{% endif %}
+{{ linkage }}void {{ name }}(const {{ real }}* u, const {{ real }}* x, const {{ real }}* p, const {{ real }}* m, {{ real }} t, {{ real }}* out) {
+{% for s in stmts %}
+{% if s.block %}
+{{ s.block }}
+{% else %}
+    const {{ real }} v{{ s.id }} = {{ s.expr }};
+{% endif %}
+{% endfor %}
+{% for w in writes %}
+    out[{{ w.idx }}] = v{{ w.src }};
+{% endfor %}
+}
+

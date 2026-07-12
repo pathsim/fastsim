@@ -1,0 +1,8 @@
+{#
+  Struct-API Library layout (Hierarchical): the per-block region functions
+  (`blk_i_alg` / `blk_i_deriv`), externally linked so `model.c` can call them.
+  Includes "blocks.h" (which pulls in "model.h" for `model_t` and the helpers).
+-#}
+#include "{{ file_base }}_blocks.h"
+
+{{ block_fns }}

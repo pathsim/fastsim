@@ -1,0 +1,389 @@
+{
+  "ir_version": 1,
+  "name": "loop",
+  "root": {
+    "id": 0,
+    "name": "root",
+    "interface": {
+      "inputs": [],
+      "outputs": []
+    },
+    "children": [
+      {
+        "Block": {
+          "id": 0,
+          "name": "SinusoidalSource",
+          "type_name": "SinusoidalSource",
+          "role": "Source",
+          "ports": {
+            "inputs": [
+              {
+                "name": "in",
+                "size": 1
+              }
+            ],
+            "outputs": [
+              {
+                "name": "out",
+                "size": 1
+              }
+            ]
+          },
+          "params": [
+            {
+              "id": 0,
+              "name": "frequency",
+              "value": {
+                "Scalar": 1.0
+              }
+            },
+            {
+              "id": 1,
+              "name": "amplitude",
+              "value": {
+                "Scalar": 1.0
+              }
+            },
+            {
+              "id": 2,
+              "name": "phase",
+              "value": {
+                "Scalar": 0.0
+              }
+            }
+          ],
+          "regions": {
+            "alg": {
+              "ops": [
+                "Time",
+                {
+                  "Param": {
+                    "id": 0
+                  }
+                },
+                {
+                  "Param": {
+                    "id": 1
+                  }
+                },
+                {
+                  "Param": {
+                    "id": 2
+                  }
+                },
+                {
+                  "Const": 6.283185307179586
+                },
+                {
+                  "Binary": {
+                    "op": "Mul",
+                    "a": 4,
+                    "b": 1
+                  }
+                },
+                {
+                  "Binary": {
+                    "op": "Mul",
+                    "a": 5,
+                    "b": 0
+                  }
+                },
+                {
+                  "Binary": {
+                    "op": "Add",
+                    "a": 6,
+                    "b": 3
+                  }
+                },
+                {
+                  "Unary": {
+                    "op": "Sin",
+                    "a": 7
+                  }
+                },
+                {
+                  "Binary": {
+                    "op": "Mul",
+                    "a": 2,
+                    "b": 8
+                  }
+                }
+              ],
+              "writes": [
+                {
+                  "Output": {
+                    "port": 0,
+                    "elem": 0,
+                    "src": 9
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "Block": {
+          "id": 1,
+          "name": "Adder",
+          "type_name": "Adder",
+          "role": "Algebraic",
+          "ports": {
+            "inputs": [
+              {
+                "name": "in",
+                "size": 1
+              }
+            ],
+            "outputs": [
+              {
+                "name": "out",
+                "size": 1
+              }
+            ]
+          },
+          "regions": {
+            "alg": {
+              "ops": [
+                {
+                  "Input": {
+                    "port": 0,
+                    "elem": 0
+                  }
+                },
+                {
+                  "Const": 1.0
+                },
+                {
+                  "Binary": {
+                    "op": "Mul",
+                    "a": 1,
+                    "b": 0
+                  }
+                }
+              ],
+              "writes": [
+                {
+                  "Output": {
+                    "port": 0,
+                    "elem": 0,
+                    "src": 2
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "Block": {
+          "id": 2,
+          "name": "Amplifier",
+          "type_name": "Amplifier",
+          "role": "Algebraic",
+          "ports": {
+            "inputs": [
+              {
+                "name": "in",
+                "size": 1
+              }
+            ],
+            "outputs": [
+              {
+                "name": "out",
+                "size": 1
+              }
+            ]
+          },
+          "params": [
+            {
+              "id": 0,
+              "name": "gain",
+              "value": {
+                "Scalar": 0.5
+              }
+            }
+          ],
+          "regions": {
+            "alg": {
+              "ops": [
+                {
+                  "Param": {
+                    "id": 0
+                  }
+                },
+                {
+                  "Input": {
+                    "port": 0,
+                    "elem": 0
+                  }
+                },
+                {
+                  "Binary": {
+                    "op": "Mul",
+                    "a": 1,
+                    "b": 0
+                  }
+                }
+              ],
+              "writes": [
+                {
+                  "Output": {
+                    "port": 0,
+                    "elem": 0,
+                    "src": 2
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "Block": {
+          "id": 3,
+          "name": "Scope",
+          "type_name": "Scope",
+          "role": "Sink",
+          "ports": {
+            "inputs": [
+              {
+                "name": "in",
+                "size": 1
+              }
+            ],
+            "outputs": [
+              {
+                "name": "out",
+                "size": 1
+              }
+            ]
+          },
+          "regions": {
+            "alg": {
+              "ops": [
+                {
+                  "Input": {
+                    "port": 0,
+                    "elem": 0
+                  }
+                },
+                {
+                  "Call": {
+                    "id": 0,
+                    "args": [
+                      0
+                    ],
+                    "out_idx": 0
+                  }
+                }
+              ],
+              "writes": [
+                {
+                  "Output": {
+                    "port": 0,
+                    "elem": 0,
+                    "src": 1
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "connections": [
+      {
+        "id": 0,
+        "src": {
+          "block": 0,
+          "port": 0
+        },
+        "targets": [
+          {
+            "block": 1,
+            "port": 0
+          }
+        ]
+      },
+      {
+        "id": 1,
+        "src": {
+          "block": 1,
+          "port": 0
+        },
+        "targets": [
+          {
+            "block": 2,
+            "port": 0
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "src": {
+          "block": 2,
+          "port": 0
+        },
+        "targets": [
+          {
+            "block": 1,
+            "port": 0
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "src": {
+          "block": 2,
+          "port": 0
+        },
+        "targets": [
+          {
+            "block": 3,
+            "port": 0
+          }
+        ]
+      }
+    ],
+    "schedule": {
+      "topo": [
+        0,
+        3,
+        1,
+        2
+      ],
+      "groups": [
+        {
+          "depth": 0,
+          "blocks": [
+            0,
+            3
+          ]
+        }
+      ],
+      "sccs": [
+        {
+          "blocks": [
+            2,
+            1
+          ],
+          "back_edges": [
+            2
+          ]
+        }
+      ],
+      "back_edges": [
+        2
+      ]
+    }
+  },
+  "extern_decls": [
+    {
+      "id": 0,
+      "name": "Scope",
+      "arity_in": 1,
+      "arity_out": 1
+    }
+  ]
+}

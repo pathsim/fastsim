@@ -1,0 +1,48 @@
+{#
+  Struct-API integrator (`<name>_step` + `<name>_run` over a file-static stage
+  kernel), shared between the Compact layout (inlined into the model TU) and
+  the Library layout (its own solver TU). For models with continuous state the
+  integrator body is generated in Rust from the chosen Butcher tableau and
+  injected as `solver_body` (fixed-step or adaptive). Pure-discrete models
+  have no state to integrate, so the driver below just advances time and
+  fires events. `<name>_deriv` / `<name>_outputs` / `<name>_handle_events`
+  come from the surrounding translation unit (Compact) or via the solver
+  header (Library).
+-#}
+{% if is_discrete %}
+/* Pure-discrete single step: advance time by `dt` and fire due events (no
+   continuous state to integrate). Fixed work per call — the RTOS/ISR entry
+   point; N calls compose exactly to run(t0 + N*dt, dt). */
+void {{ name }}_step({{ name }}_t * restrict m, {{ real }} dt) {
+{% if has_events %}
+    if (!m->fs_started) { {{ name }}_handle_events(m, dt); m->fs_started = 1; }
+{% endif %}
+    m->time += dt;
+{% if has_events %}
+    {{ name }}_handle_events(m, dt);
+{% endif %}
+{% if has_sig %}
+    {{ name }}_outputs(m);
+{% endif %}
+}
+
+/* Pure-discrete driver: advance time in fixed `dt` steps, firing events each
+   step (no continuous state to integrate). */
+void {{ name }}_run({{ name }}_t * restrict m, {{ real }} t_end, {{ real }} dt) {
+{% if has_events %}
+    {{ name }}_handle_events(m, dt);
+    m->fs_started = 1;
+{% endif %}
+    while (m->time < t_end - {{ half_dt }}) {
+        m->time += dt;
+{% if has_events %}
+        {{ name }}_handle_events(m, dt);
+{% endif %}
+    }
+{% if has_sig %}
+    {{ name }}_outputs(m);
+{% endif %}
+}
+{% else %}
+{{ solver_body }}
+{% endif %}

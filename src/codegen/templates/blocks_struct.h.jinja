@@ -1,0 +1,13 @@
+{#
+  Struct-API Library layout (Hierarchical): prototypes for the per-block region
+  functions (`blk_i_alg` / `blk_i_deriv`), whose definitions live in `blocks.c`.
+  Each takes the model instance `model_t* m`; `blk_i_alg` writes that block's
+  outputs into `m->sig`, `blk_i_deriv` writes its dx/dt into `dxdt`.
+-#}
+#ifndef FASTSIM_{{ name | upper }}_BLOCKS_H
+#define FASTSIM_{{ name | upper }}_BLOCKS_H
+
+#include "{{ file_base }}.h"
+
+{{ block_protos }}
+#endif /* FASTSIM_{{ name | upper }}_BLOCKS_H */

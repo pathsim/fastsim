@@ -1,0 +1,122 @@
+{#
+  rtModel-style model: one `<name>_t` struct holds time, states, signals,
+  parameters and memory; every entry point takes `model_t* m`. `*_get_signal` /
+  `*_set_signal` read/write addressable signals by id (states + outputs readable,
+  states + parameters settable). The op->expression bodies are produced in Rust
+  and injected as `outputs_body` / `deriv_body` / `init_body`.
+-#}
+#include "{{ file_base }}.h"
+{% if library %}
+{% if block_protos %}#include "{{ file_base }}_blocks.h"
+{% endif %}#include "{{ file_base }}_solver.h"
+{% endif %}
+
+{% if not library %}{{ block_fns }}{% endif %}
+{% if has_sig %}
+/* Recompute all block output signals into `m->sig` from the current state.
+   Hierarchical: calls the per-block `blk_i_alg`; Flat: fused inline. */
+{% if not library %}static {% endif %}void {{ name }}_outputs({{ name }}_t * restrict m) {
+{{ outputs_body }}}
+{% endif %}
+
+{% if not is_discrete %}
+/* State derivative `dxdt = f(state, time)`, evaluated for the integrator. */
+{% if not library %}static {% endif %}void {{ name }}_deriv({{ name }}_t * restrict m, {{ real }}* restrict dxdt) {
+{{ deriv_body }}}
+{% endif %}
+{% if has_jvp %}
+/* Directional derivative (forward-mode AD): given seeds for the states
+   (`x_seed`), external inputs (`u_seed`) and parameters (`p_seed`), fills the
+   tangents of the block-output signals (`d_sig`) and the state derivatives
+   (`d_dxdt`). Exact (not finite differences); covers d{y,xdot}/d{x,u,p}. */
+void {{ name }}_jvp({{ name }}_t * restrict m,
+        const {{ real }}* restrict x_seed, const {{ real }}* restrict u_seed,
+        const {{ real }}* restrict p_seed, {{ real }}* restrict d_sig,
+        {{ real }}* restrict d_dxdt) {
+    (void)u_seed; (void)p_seed; (void)d_sig;
+{{ jvp_body }}}
+{% endif %}
+{% if has_events %}
+{{ event_fns }}{% endif %}
+
+/* Initialise the model in place: seed state, parameters and memory. Call once
+   before stepping. */
+void {{ name }}_init({{ name }}_t * restrict m) {
+{{ init_body }}
+{% if has_input %}
+    for (size_t fs_i = 0; fs_i < {{ n_input }}; fs_i++) m->u[fs_i] = 0;
+{% endif %}
+{% if has_sig %}
+    {{ name }}_outputs(m);
+{% endif %}
+}
+{% if has_events %}
+
+void {{ name }}_handle_events({{ name }}_t * restrict m, {{ real }} dt) {
+{% if need_sig_handle %}
+    {{ name }}_outputs(m);
+{% endif %}
+{% for e in events %}
+{% if e.kind == "periodic" %}
+    while (m->next_{{ e.suffix }} <= m->time + {{ half_dt }}) {
+        effect_{{ e.suffix }}(m);
+        m->next_{{ e.suffix }} += {{ e.period }};
+    }
+{% elif e.kind == "fixed" %}
+    static const {{ real }} times_{{ e.suffix }}[] = { {{ e.times | join(", ") }} };
+    while (m->fi_{{ e.suffix }} < {{ e.times | length }} && times_{{ e.suffix }}[m->fi_{{ e.suffix }}] <= m->time + {{ half_dt }}) {
+        effect_{{ e.suffix }}(m);
+        m->fi_{{ e.suffix }}++;
+    }
+{% elif e.kind == "zerocross" %}
+    {
+        {{ real }} cur_{{ e.suffix }} = guard_{{ e.suffix }}(m);
+        if (m->init_{{ e.suffix }} && ({{ e.cross_cond }})) effect_{{ e.suffix }}(m);
+        m->prev_{{ e.suffix }} = cur_{{ e.suffix }};
+        m->init_{{ e.suffix }} = 1;
+    }
+{% else %}{# condition: rising edge of a non-zero guard #}
+    {
+        {{ real }} cur_{{ e.suffix }} = guard_{{ e.suffix }}(m);
+        if (cur_{{ e.suffix }} != 0 && (!m->init_{{ e.suffix }} || m->prev_{{ e.suffix }} == 0)) effect_{{ e.suffix }}(m);
+        m->prev_{{ e.suffix }} = cur_{{ e.suffix }};
+        m->init_{{ e.suffix }} = 1;
+    }
+{% endif %}
+{% endfor %}
+}
+{% endif %}
+
+{% if not library %}
+{% include "solver_impl_struct.c" %}
+{% endif %}
+
+/* Read an addressable signal by id: states first, then block outputs, then
+   parameters. Returns 0 for an out-of-range id. */
+{{ real }} {{ name }}_get_signal(const {{ name }}_t * restrict m, uint16_t id) {
+{% if n_state > 0 %}
+    if (id < {{ n_state }}u) return m->x[id];
+{% endif %}
+{% if has_sig %}
+    if (id < {{ n_state + n_sig }}u) return m->sig[id - {{ n_state }}u];
+{% endif %}
+{% if has_param %}
+    if (id < {{ n_state + n_sig + n_param }}u) return m->p[id - {{ n_state + n_sig }}u];
+{% endif %}
+    return 0;
+}
+
+/* Write an addressable signal by id: states and parameters are settable, block
+   outputs are read-only. Returns 0 on success, -1 if the id is not settable. */
+int {{ name }}_set_signal({{ name }}_t * restrict m, uint16_t id, {{ real }} value) {
+{% if n_state > 0 %}
+    if (id < {{ n_state }}u) { m->x[id] = value; return 0; }
+{% endif %}
+{% if has_sig %}
+    if (id < {{ n_state + n_sig }}u) return -1;
+{% endif %}
+{% if has_param %}
+    if (id < {{ n_state + n_sig + n_param }}u) { m->p[id - {{ n_state + n_sig }}u] = value; return 0; }
+{% endif %}
+    return -1;
+}
