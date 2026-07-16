@@ -541,3 +541,147 @@ fn test_adaptive_simultaneous_zerocrossings_resolve_once_each() {
     assert_eq!(*c1.borrow(), 1, "zc1 should fire exactly once");
     assert_eq!(*c2.borrow(), 1, "zc2 should fire exactly once");
 }
+
+// ======================================================================================
+// Dense-output event localisation (adaptive path)
+// ======================================================================================
+
+/// Harmonic oscillator x'' = -x from (x, v) = (1, 0): x(t) = cos(t), first
+/// zero crossing at t = π/2. Returns (sim, integrator-x block) ready to run.
+fn oscillator_with_crossing(
+    times_log: Rc<FastCell<Vec<f64>>>,
+) -> fastsim::simulation::Simulation {
+    use fastsim::solvers::factories::rkdp54_factory;
+
+    let int_v = integrator(0.0); // v' = -x
+    let int_x = integrator(1.0); // x' = v
+    let amp = amplifier(-1.0);
+    let s = scope(None, 0.0, vec![]);
+
+    let conns = vec![
+        Connection::single(&int_v, &int_x),
+        Connection::single(&int_x, &amp),
+        Connection::single(&amp, &int_v),
+        Connection::single(&int_x, &s),
+    ];
+
+    let x_read = int_x.clone();
+    let evt = ZeroCrossing::new(
+        move |_t| x_read.borrow().outputs.get_single(0),
+        Some(Box::new(move |t| { times_log.borrow_mut().push(t); })),
+        1e-6,
+    );
+
+    let mut sim = fastsim::simulation::Simulation::with_defaults(
+        vec![int_v, int_x, amp, s],
+        conns,
+    );
+    sim.set_solver(rkdp54_factory(1e-8, 1e-8));
+    sim.add_event(Rc::new(FastCell::new(evt)));
+    sim.dt = 0.1;
+    sim
+}
+
+#[test]
+fn test_dense_localization_accuracy_and_savings() {
+    let half_pi = std::f64::consts::FRAC_PI_2;
+
+    // A: dense-output localisation (default on).
+    let log_a: Rc<FastCell<Vec<f64>>> = Rc::new(FastCell::new(Vec::new()));
+    let mut sim_a = oscillator_with_crossing(log_a.clone());
+    // Force both modes explicitly so the test is independent of the
+    // FASTSIM_DENSE_EVENTS environment escape hatch.
+    sim_a.dense_events = true;
+    let stats_a = sim_a.run(2.0, true, true);
+
+    // B: legacy secant retries only.
+    let log_b: Rc<FastCell<Vec<f64>>> = Rc::new(FastCell::new(Vec::new()));
+    let mut sim_b = oscillator_with_crossing(log_b.clone());
+    sim_b.dense_events = false;
+    let stats_b = sim_b.run(2.0, true, true);
+
+    // Both must localise the crossing to the event tolerance (|x| <= 1e-6 near
+    // the root maps ~1:1 onto time because |x'(pi/2)| = 1).
+    for (label, log) in [("dense", &log_a), ("secant", &log_b)] {
+        let fired = log.borrow();
+        assert_eq!(fired.len(), 1, "{label}: exactly one crossing expected, got {:?}", *fired);
+        assert!(
+            (fired[0] - half_pi).abs() < 1e-5,
+            "{label}: crossing at {} vs pi/2 = {half_pi}",
+            fired[0]
+        );
+    }
+
+    // The dense path must resolve the event with fewer total steps (no secant
+    // retry cascade: each retry is a rejected step + full re-integration).
+    assert!(
+        stats_a.total_steps <= stats_b.total_steps
+            && stats_a.total_evals < stats_b.total_evals,
+        "dense localisation must save work: dense {} steps / {} evals, secant {} steps / {} evals",
+        stats_a.total_steps, stats_a.total_evals, stats_b.total_steps, stats_b.total_evals
+    );
+}
+
+#[test]
+fn test_dense_localization_multiple_crossings() {
+    // cos(t) crosses zero at pi/2 + k*pi; over 7 time units that is 2 down- and
+    // 1 up-crossings (pi/2, 3pi/2, 5pi/2 < 7 < 7pi/2... pi/2 ~ 1.571, 3pi/2 ~ 4.712,
+    // 5pi/2 ~ 7.854 > 7): expect exactly 2.
+    let log: Rc<FastCell<Vec<f64>>> = Rc::new(FastCell::new(Vec::new()));
+    let mut sim = oscillator_with_crossing(log.clone());
+    sim.run(7.0, true, true);
+
+    let fired = log.borrow();
+    assert_eq!(fired.len(), 2, "expected 2 crossings, got {:?}", *fired);
+    for (k, &t) in fired.iter().enumerate() {
+        let expect = std::f64::consts::FRAC_PI_2 + k as f64 * std::f64::consts::PI;
+        assert!(
+            (t - expect).abs() < 1e-4,
+            "crossing {k} at {t} vs expected {expect} (energy decays slightly under LTE)"
+        );
+    }
+}
+
+#[test]
+fn test_condition_event_adaptive_terminates() {
+    // Regression: Condition's "close" test is time-based (t - t_buffered <
+    // tolerance), which a theta-localized retry can never satisfy on its own —
+    // the localizer must fall back to the legacy secant path (return None)
+    // so the run keeps its progress guarantee and terminates. Audit finding:
+    // the first implementation returned a detecting theta unconditionally and
+    // livelocked exactly this setup.
+    use fastsim::solvers::factories::rkdp54_factory;
+
+    let fired: Rc<FastCell<Vec<f64>>> = Rc::new(FastCell::new(Vec::new()));
+    let fired_c = fired.clone();
+    let evt = Condition::new(
+        |t| t > 0.3,
+        Some(Box::new(move |t| { fired_c.borrow_mut().push(t); })),
+        1e-6,
+    );
+
+    let int_x = integrator(1.0);
+    let amp = amplifier(-1.0);
+    let s = scope(None, 0.0, vec![]);
+    let conns = vec![
+        Connection::single(&int_x, &amp),
+        Connection::single(&amp, &int_x),
+        Connection::single(&int_x, &s),
+    ];
+    let mut sim = fastsim::simulation::Simulation::with_defaults(vec![int_x, amp, s], conns);
+    sim.set_solver(rkdp54_factory(1e-8, 1e-8));
+    sim.add_event(Rc::new(FastCell::new(evt)));
+    sim.dt = 0.1;
+    sim.dense_events = true;
+
+    // Must terminate (the livelock spun here forever) and fire near t = 0.3.
+    sim.run(1.0, true, true);
+    assert!((sim.time - 1.0).abs() < 1e-9, "run must reach the end time, got t={}", sim.time);
+    let f = fired.borrow();
+    assert_eq!(f.len(), 1, "condition must fire exactly once, got {:?}", *f);
+    assert!(
+        (f[0] - 0.3).abs() < 1e-5,
+        "condition fired at {} vs expected ~0.3",
+        f[0]
+    );
+}

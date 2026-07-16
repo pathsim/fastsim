@@ -188,6 +188,19 @@ pub struct Simulation {
     // Event-loop scratch buffer, reused across timesteps to avoid per-step allocs
     _detected_scratch: Vec<(SimEventRef, bool, f64)>,
 
+    /// Localise zero-crossing events on the solvers' dense output before the
+    /// adaptive retry (root-find on the step interpolant: one DAG update per
+    /// probe instead of one full re-integration per secant retry). Default on;
+    /// `FASTSIM_DENSE_EVENTS=0` in the environment or this flag disable it
+    /// (A/B benchmarking, debug).
+    pub dense_events: bool,
+
+    /// True while `_localize_events_theta` probes the system on interpolated
+    /// throw-away states: `_loops` failures there are expected off-trajectory
+    /// noise and must not mark the run outcome (mirrors the adaptive-solve
+    /// policy of not recording reverted steps).
+    _probing: bool,
+
 
     // Active flag
     _active: bool,
@@ -334,6 +347,8 @@ impl Simulation {
             _blocks_dyn_indices: Vec::new(),
             _blocks_evt_indices: Vec::new(),
             _detected_scratch: Vec::new(),
+            dense_events: Self::dense_events_default(),
+            _probing: false,
             _active: true,
             _assembly_error: None,
             _run_dt: dt,
@@ -419,6 +434,8 @@ impl Simulation {
             _blocks_dyn_indices: Vec::new(),
             _blocks_evt_indices: Vec::new(),
             _detected_scratch: Vec::new(),
+            dense_events: Self::dense_events_default(),
+            _probing: false,
             _active: true,
             _assembly_error: None,
             _run_dt: dt,
@@ -1173,6 +1190,12 @@ impl Simulation {
         }
 
         self._loop_tracker.iterations = self.iterations_max;
+        // Off-trajectory localization probes are throw-away evaluations; a
+        // failed loop there is not a property of the accepted trajectory
+        // (mirrors the adaptive-solve policy of not recording reverted steps).
+        if self._probing {
+            return;
+        }
         // Record the failure into the per-run outcome so RunStats reports it and
         // the Python layer can emit an unconditional FastSimConvergenceWarning
         // (issue #27) — instead of only this log line, which is off by default.
@@ -1534,8 +1557,14 @@ impl Simulation {
                 .map(|(_, _, r)| *r);
             match non_close_ratio {
                 // Normal case: shrink dt and retry to bring the event within
-                // tolerance on the next step.
+                // tolerance on the next step. The retry target is the linear
+                // secant ratio, refined — when the solvers expose a dense
+                // output — by root-finding the crossing on the step
+                // interpolant, so the single retry usually lands within
+                // tolerance instead of cascading through several full
+                // re-integrations.
                 Some(ratio) if !force_resolve => {
+                    let ratio = self._localize_events_theta(dt, ratio, evals).unwrap_or(ratio);
                     self._revert(self.time);
                     return Some(ratio);
                 }
@@ -1567,6 +1596,101 @@ impl Simulation {
         self._update(time_dt);
         *evals += 1;
         None
+    }
+
+    /// Refine the earliest event crossing inside the just-completed step to a
+    /// `θ ∈ (0, 1]` by bisection on the solvers' dense output: each probe
+    /// repositions the dynamic states via [`Solver::dense_seek`] and refreshes
+    /// the algebraic DAG — one system update per probe instead of one full
+    /// re-integration per retry. States are restored before returning; the
+    /// caller reverts (adaptive path) right after, which also refreshes the
+    /// block outputs.
+    ///
+    /// Returns `None` — keep the legacy secant ratio and its termination
+    /// guarantees — when disabled, when any active dynamic block lacks a valid
+    /// interpolant, when a seek fails, or when the probes do not converge onto
+    /// a θ at which every bracketed event is already within its own tolerance.
+    /// That last condition is what makes the localizer a pure accelerator: a
+    /// returned θ is one the retry step provably resolves at, so it can never
+    /// trade the legacy path's progress guarantee (a strictly-shrinking dt) for
+    /// a non-shrinking retry. In particular, `Condition` events (whose "close"
+    /// test is time-based and unsatisfiable at a detecting θ) and crossings the
+    /// interpolant cannot reproduce always fall back to the legacy path.
+    fn _localize_events_theta(&mut self, dt: f64, ratio0: f64, evals: &mut usize) -> Option<f64> {
+        if !self.dense_events {
+            return None;
+        }
+        // Every active dynamic engine must expose a valid interpolant (a
+        // Subsystem wrapper's dummy engine never does — such models always use
+        // the legacy retry path).
+        let mut interpolable = true;
+        self._for_each_active_engine(|engine| interpolable &= engine.can_interpolate());
+        if !interpolable {
+            return None;
+        }
+        let t0 = self.time;
+        // Bracket: no crossing at θ = 0 (the events' buffered step-start
+        // values), crossing detected at θ = 1 (the caller just saw it).
+        // Regula falsi with bisection safeguard: probe first at the caller's
+        // linear secant estimate; every bracketing probe refines through the
+        // event's own secant ratio, so smooth crossings converge in 2-4 probes.
+        let (mut lo, mut hi) = (0.0f64, 1.0f64);
+        let mut guess = ratio0.clamp(DENSE_EVT_THETA_MIN, 1.0 - DENSE_EVT_THETA_EDGE);
+        let mut resolved_at_hi = false;
+        // Probe updates run on interpolated throw-away states; a failed
+        // algebraic-loop iteration there must not mark the run outcome.
+        self._probing = true;
+        for _ in 0..DENSE_EVT_MAX_PROBES {
+            let mut seek_ok = true;
+            self._for_each_active_engine(|engine| seek_ok &= engine.dense_seek(guess));
+            if !seek_ok {
+                break;
+            }
+            self._update(t0 + guess * dt);
+            *evals += 1;
+            self._detect_into_scratch(t0 + guess * dt);
+            if self._detected_scratch.is_empty() {
+                lo = guess;
+                guess = 0.5 * (lo + hi);
+            } else {
+                hi = guess;
+                // Every event bracketed by θ is within its own tolerance: the
+                // retry step to θ will detect them as close and resolve.
+                if self._detected_scratch.iter().all(|(_, close, _)| *close) {
+                    resolved_at_hi = true;
+                    break;
+                }
+                // Earliest event's secant estimate, mapped from [t0, t0+θ·dt]
+                // back onto the full step; safeguarded into the open bracket.
+                let refined = self._detected_scratch[0].2 * guess;
+                guess = if refined > lo && refined < hi {
+                    refined
+                } else {
+                    0.5 * (lo + hi)
+                };
+            }
+            if hi - lo < DENSE_EVT_THETA_WIDTH {
+                break;
+            }
+        }
+        self._probing = false;
+        self._for_each_active_engine(|engine| engine.dense_seek_end());
+        resolved_at_hi.then_some(hi)
+    }
+
+    /// Run `f` on every active dynamic block's engine (the shared iteration
+    /// skeleton of the dense-output gating, seek, and restore passes).
+    fn _for_each_active_engine(&self, mut f: impl FnMut(&mut Solver)) {
+        for &idx in &self._blocks_dyn_indices {
+            if let Some(block) = self.blocks.get(idx) {
+                let b = block.borrow_mut();
+                if b.is_active() {
+                    if let Some(engine) = b.engine.as_mut() {
+                        f(engine);
+                    }
+                }
+            }
+        }
     }
 
     /// Capture current diagnostics snapshot (if enabled) and append to history.
@@ -1636,6 +1760,13 @@ impl Simulation {
 
     pub fn stop(&mut self) {
         self._active = false;
+    }
+
+    /// Default for [`dense_events`](Self::dense_events): on, unless the
+    /// `FASTSIM_DENSE_EVENTS=0` escape hatch is set. Single home for the
+    /// env contract (both constructors call this).
+    fn dense_events_default() -> bool {
+        std::env::var_os("FASTSIM_DENSE_EVENTS").is_none_or(|v| v != "0")
     }
 
     // ==================================================================================

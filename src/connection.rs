@@ -31,6 +31,21 @@ pub struct Connection {
 }
 
 impl Connection {
+    /// Convenience constructor for the ubiquitous port-0 → port-0 wiring:
+    /// `Connection::single(&a, &b)` connects `a`'s default output to `b`'s
+    /// default input. This is the single home for the pattern every test,
+    /// bench and example previously re-implemented as a local `connect`/`conn`
+    /// helper.
+    pub fn single(
+        source: &crate::blocks::block::BlockRef,
+        target: &crate::blocks::block::BlockRef,
+    ) -> std::rc::Rc<Self> {
+        std::rc::Rc::new(Self::new(
+            crate::utils::portreference::PortReference::new(source.clone(), None),
+            vec![crate::utils::portreference::PortReference::new(target.clone(), None)],
+        ))
+    }
+
     /// Create a new Connection from source and targets.
     ///
     /// Mirrors Python `Connection.__init__(source, *targets)`.

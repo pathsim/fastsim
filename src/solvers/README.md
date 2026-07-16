@@ -48,7 +48,22 @@ for adaptive variants, estimates the error via `Σ (b_i - b̂_i) k_i`.
   `Tableau` struct, plus `pub const` tableau definitions for every
   supported method (SSPRK22/33/34, RK4, RKBS32, RKF21/45/78, RKCK54,
   RKDP54/87, RKV65, DIRK2/3, ESDIRK4/32/43/54, EUF). Exposes a flat `ALL`
-  slice and a `by_name(&str)` lookup.
+  slice and a `by_name(&str)` lookup. Tableaus with a published continuous
+  extension carry its `di` matrix (RKDP54: Shampine, RKBS32:
+  Bogacki-Shampine).
+- `dense.rs` — dense output: `Solver::interpolate(θ, out)` evaluates the
+  last completed step's continuous extension at `θ ∈ [0, 1]`, zero-copy
+  over the live buffers (`history[0]`, `x`, `ks`). Multistep solvers
+  (`dense_hist > 0`, set by the GEAR factory to the active BDF order)
+  interpolate the variable-step Lagrange polynomial through the history —
+  the same polynomial the BDF formula fits. Single-step solvers use the
+  tableau `di` matrix when present, else tiered Hermite: cubic when both
+  endpoint slopes exist (FSAL explicit RK, stiffly-accurate DIRK/ESDIRK —
+  detected structurally in `populate_from_tableau`), quadratic on one
+  slope, linear otherwise. Validity window (`dense_valid`) opens at a
+  step's final stage and closes on the next buffer or a revert.
+  `dense_seek(θ)` / `dense_seek_end()` temporarily reposition `x` on the
+  interpolant (event localisation, see `events/README.md`).
 - `factories.rs` — one generic `build_from_tableau` that populates a
   `Solver` from a `Tableau` and installs the right step/solve/buffer
   closures based on `TableauKind`; plus thin per-tableau wrappers

@@ -107,6 +107,19 @@ pub struct CompiledSimulation {
     /// that again. Invalidated (set to `None`) by everything that changes the
     /// trajectory or the tap outputs: recording a step, `reset`, `set_param`.
     pub(super) rec_cache: std::cell::RefCell<Option<Vec<Vec<f64>>>>,
+    /// Counters of the LAST `run` call (reset at the start of every run),
+    /// mirroring the interpreted engine's `RunStats` at compiled-path scope.
+    pub last_stats: CompiledRunStats,
+}
+
+/// Per-run counters of the compiled path: accepted / rejected steps and
+/// derivative-tape evaluations. The compiled loop has no per-block trackers
+/// (that is the point), so this is the compiled analogue of `RunStats`.
+#[derive(Debug, Default, Clone)]
+pub struct CompiledRunStats {
+    pub total_steps: usize,
+    pub rejected_steps: usize,
+    pub total_evals: usize,
 }
 
 impl CompiledSimulation {
@@ -354,6 +367,7 @@ impl CompiledSimulation {
     /// `recordings` afterwards.
     pub fn run(&mut self, duration: f64, reset: bool, adaptive: bool) {
         use crate::utils::logger::ProgressTracker;
+        self.last_stats = CompiledRunStats::default();
         if reset {
             self.reset(0.0);
         }
@@ -504,10 +518,18 @@ impl CompiledSimulation {
         let (mut g_buf, mut jac_buf, mut f_buf) = (Vec::new(), Vec::new(), Vec::new());
         let n_out = self.fused.n_out;
 
+        // Per-run counters; `evals` is a Cell so the rhs closure (which
+        // borrows `self.fused`) can bump it without a mutable self borrow.
+        let evals = std::cell::Cell::new(0usize);
+        let (mut accepted, mut rejected) = (0usize, 0usize);
+
         // Initial-step heuristic (adaptive) — matches `*Solver::integrate`.
         if adaptive {
             let order = s.n.max(1);
-            let rhs = |x: &[f64], t: f64| self.fused.call(&[x, &m, &[t]]);
+            let rhs = |x: &[f64], t: f64| {
+                evals.set(evals.get() + 1);
+                self.fused.call(&[x, &m, &[t]])
+            };
             dt = auto_initial_step(
                 &rhs, &s.x, t_start, dt, s.tolerance_lte_abs, s.tolerance_lte_rel,
                 order, dt_min, dt_max,
@@ -530,6 +552,7 @@ impl CompiledSimulation {
             // compiled fast path is now zero-alloc per RK stage (issue #41).
             let (success, scale) = {
                 let mut rhs = |x: &[f64], t: f64, out: &mut Vec<f64>| {
+                    evals.set(evals.get() + 1);
                     out.resize(n_out, 0.0);
                     self.fused.call_into(&[x, &m, &[t]], out);
                 };
@@ -551,8 +574,10 @@ impl CompiledSimulation {
             };
             if adaptive && !success {
                 s.revert();
+                rejected += 1;
             } else {
                 time += dt;
+                accepted += 1;
                 self.record_step(time, &s.x, &m, false);
                 tracker.update(((time - t_start) / duration).clamp(0.0, 1.0), true);
             }
@@ -577,6 +602,9 @@ impl CompiledSimulation {
 
         self.time = time;
         self.x = s.x.clone();
+        self.last_stats.total_steps += accepted;
+        self.last_stats.rejected_steps += rejected;
+        self.last_stats.total_evals += evals.get();
         // Guarantee the final true state is in the trajectory even under
         // downsampling / capping (issue #44): append it if the last recorded
         // sample isn't already this step.
@@ -706,6 +734,8 @@ impl CompiledSimulation {
         // `t_end`, fixed-step runs take the first step that reaches or passes it.
         // A model must end at the same time whether or not it happens to contain
         // block-internal events (and whether or not it was compiled).
+        let evals = std::cell::Cell::new(0usize);
+        let (mut accepted, mut rejected) = (0usize, 0usize);
         let mut iters = 0usize;
         while time < t_end {
             iters += 1;
@@ -728,6 +758,7 @@ impl CompiledSimulation {
             // implicit Newton — identical event handling around it. The RHS
             // writes into the caller-owned `f_buf` via `call_into` (issue #41).
             let mut rhs = |x: &[f64], t: f64, out: &mut Vec<f64>| {
+                evals.set(evals.get() + 1);
                 out.resize(n_out, 0.0);
                 self.fused.call_into(&[x, &m_step, &[t]], out);
             };
@@ -748,6 +779,7 @@ impl CompiledSimulation {
             };
             if adaptive && !success {
                 s.revert();
+                rejected += 1;
                 if let Some(sc) = scale {
                     dt = (sc * dt).clamp(dt_min, dt_max);
                 }
@@ -779,6 +811,7 @@ impl CompiledSimulation {
                         .fold(f64::INFINITY, f64::min);
                     if earliest.is_finite() {
                         s.revert();
+                        rejected += 1;  // event-location retry, step discarded
                         dt = (earliest * dt).max(dt_min);
                         continue;
                     }
@@ -799,6 +832,7 @@ impl CompiledSimulation {
             }
 
             time = t_new;
+            accepted += 1;
             let mem_now = shared.borrow().m.clone();
             self.record_step(time, &s.x, &mem_now, false);
             tracker.update(((time - (t_end - duration)) / duration).clamp(0.0, 1.0), true);
@@ -813,6 +847,9 @@ impl CompiledSimulation {
         self.time = time;
         self.x = s.x.clone();
         self.m = shared.borrow().m.clone();
+        self.last_stats.total_steps += accepted;
+        self.last_stats.rejected_steps += rejected;
+        self.last_stats.total_evals += evals.get();
         // Guarantee the final true state is recorded even under downsampling /
         // capping (issue #44).
         if self.rec_times.last() != Some(&time) {

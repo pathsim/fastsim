@@ -169,6 +169,7 @@ pub fn compile(module: &Module) -> Result<CompiledSimulation, CompileError> {
         time: 0.0,
         logger: crate::utils::logger::Logger::disabled(),
         rec_cache: std::cell::RefCell::new(None),
+        last_stats: Default::default(),
     })
 }
 

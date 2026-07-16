@@ -43,6 +43,26 @@ fn populate_from_tableau(s: &mut Solver, t: &Tableau) {
         .collect();
     if !t.tr.is_empty() { s.tr = Some(t.tr.to_vec()); }
     if !t.a_final.is_empty() { s.a_final = Some(t.a_final.to_vec()); }
+
+    // Dense-output classification (consumed by `Solver::interpolate`):
+    // is the stage-0 slope `f(x₀, t₀)`, and the last-stage slope `f(x₁, t₁)`?
+    //
+    // f₀: explicit RK always evaluates stage 0 at the step start (c₀ = 0);
+    // ESDIRK when its first stage is explicit (empty bt row) at c₀ = 0.
+    s.dense_f0 = match t.kind {
+        TableauKind::ExplicitRK => t.eval_stages.first().copied() == Some(0.0),
+        _ => t.bt.first().is_some_and(|r| r.is_empty())
+            && t.eval_stages.first().copied() == Some(0.0),
+    };
+    // f₁: FSAL-style trailing stage (explicit RK whose last stage evaluates at
+    // c = 1 on the b-row state, i.e. the last two tableau rows coincide), or a
+    // stiffly-accurate DIRK/ESDIRK (c_last = 1, output = last stage solution).
+    s.dense_f1 = t.eval_stages.last().copied() == Some(1.0)
+        && match t.kind {
+            TableauKind::ExplicitRK => t.s >= 2 && t.bt[t.s - 1] == t.bt[t.s - 2],
+            _ => t.a_final.is_empty(),
+        };
+    s.dense_di = t.di;
 }
 
 /// Build a `SolverFactory` that assembles a `Solver` from the given tableau.
@@ -632,6 +652,9 @@ pub fn gear52a_factory(tol_abs: f64, tol_rel: f64) -> SolverFactory {
             // accuracy order: order = m.min(n) + 1 = n_active.
             solver.n = g.n_active;
             solver.m = g.n_active.saturating_sub(1);
+            // Dense output interpolates through the same history points the
+            // BDF formula at this order fits (see `solvers/dense.rs`).
+            solver.dense_hist = g.n_active;
 
             // Re-fit z from history.  Nordsieck poly degree = n_active − 1
             // (so the polynomial is fitted through `n_active` past history

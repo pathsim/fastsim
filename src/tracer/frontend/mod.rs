@@ -23,7 +23,8 @@
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::types::{PyDict, PyTuple};
-use std::sync::{Arc, Mutex};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::ssa::graph::*;
 use super::ufunc_table::{binop_for_ufunc, cmpop_for_ufunc, unary_op_for_ufunc};
@@ -32,41 +33,51 @@ mod array;
 pub use array::JitTracerArray;
 
 /// Shared graph builder that multiple Tracer instances write into.
+///
+/// `Rc<RefCell>` rather than `Arc<Mutex>`: tracing always runs on the Python
+/// thread under the GIL, and the tracer pyclasses are `unsendable`, so there
+/// is no cross-thread access to synchronise — the former mutex paid an atomic
+/// lock per emitted node for nothing.
 #[derive(Clone)]
-struct SharedGraph(Arc<Mutex<Graph>>);
+struct SharedGraph(Rc<RefCell<Graph>>);
 
 impl SharedGraph {
     fn new(signature: InputSignature) -> Self {
-        Self(Arc::new(Mutex::new(Graph::new(signature))))
+        Self(Rc::new(RefCell::new(Graph::new(signature))))
+    }
+    /// Run `f` with mutable access to the graph — the batch-emission door:
+    /// per-element loops emit their nodes under ONE borrow instead of one
+    /// borrow per node.
+    fn with<R>(&self, f: impl FnOnce(&mut Graph) -> R) -> R {
+        f(&mut self.0.borrow_mut())
     }
     fn add(&self, node: Node) -> NodeId {
-        self.0.lock().unwrap().add(node)
+        self.0.borrow_mut().add(node)
     }
-    /// Mint `n` consecutive `Input(base..base+n)` reads under a single lock
-    /// (vs one `add` lock per element when materializing a lazy input array).
+    /// Mint `n` consecutive `Input(base..base+n)` reads under a single borrow.
     fn add_input_range(&self, base: u32, n: usize) -> Vec<NodeId> {
-        let mut g = self.0.lock().unwrap();
+        let mut g = self.0.borrow_mut();
         (0..n as u32).map(|i| g.add(Node::Input(base + i))).collect()
     }
     fn constant(&self, v: f64) -> NodeId {
-        self.0.lock().unwrap().constant(v)
+        self.0.borrow_mut().constant(v)
     }
     fn binary(&self, op: BinOp, a: NodeId, b: NodeId) -> NodeId {
-        self.0.lock().unwrap().binary(op, a, b)
+        self.0.borrow_mut().binary(op, a, b)
     }
     fn unary(&self, op: UnaryOp, a: NodeId) -> NodeId {
-        self.0.lock().unwrap().unary(op, a)
+        self.0.borrow_mut().unary(op, a)
     }
     fn cmp(&self, op: CmpOp, a: NodeId, b: NodeId) -> NodeId {
-        self.0.lock().unwrap().cmp(op, a, b)
+        self.0.borrow_mut().cmp(op, a, b)
     }
     fn select(&self, c: NodeId, th: NodeId, el: NodeId) -> NodeId {
-        self.0.lock().unwrap().select(c, th, el)
+        self.0.borrow_mut().select(c, th, el)
     }
 }
 
 /// A symbolic f64 value that records operations into the SSA graph.
-#[pyclass(name = "JitTracer", from_py_object)]
+#[pyclass(name = "JitTracer", from_py_object, unsendable)]
 #[derive(Clone)]
 pub struct JitTracer {
     node_id: NodeId,
@@ -300,6 +311,9 @@ impl JitTracer {
             // size-1 broadcasting. NOTE: numpy dispatches here whenever ANY
             // argument is a tracer — the condition is args[0], not `self`.
             "where" => array::np_where_dispatch(py, &self.graph, args),
+            // np.searchsorted over a constant grid on a scalar tracer value
+            // (numpy dispatches here because the grid is a plain array).
+            "searchsorted" => array::np_searchsorted_dispatch(py, &self.graph, args, _kwargs),
             // np.interp over a constant ascending grid lowers to a select
             // chain (see `emit_interp`). Extra kwargs (left/right/period) are
             // not supported and fall through to NotImplemented.
@@ -472,7 +486,8 @@ pub fn jit_random_normal(key: &JitTracer) -> JitTracer {
 // ======================================================================================
 
 /// Emit a unary composite ufunc by name, or `None` if the name is not one.
-fn unary_composite(g: &SharedGraph, name: &str, x: NodeId) -> Option<NodeId> {
+/// The `&mut Graph` core lets array loops emit N elements under one borrow.
+pub(super) fn unary_composite_g(g: &mut Graph, name: &str, x: NodeId) -> Option<NodeId> {
     Some(match name {
         // numpy aliases the same conversion under two ufunc names each.
         "deg2rad" | "radians" => {
@@ -506,8 +521,13 @@ fn unary_composite(g: &SharedGraph, name: &str, x: NodeId) -> Option<NodeId> {
     })
 }
 
+fn unary_composite(g: &SharedGraph, name: &str, x: NodeId) -> Option<NodeId> {
+    g.with(|g| unary_composite_g(g, name, x))
+}
+
 /// Emit a binary composite ufunc by name, or `None` if the name is not one.
-fn binary_composite(g: &SharedGraph, name: &str, a: NodeId, b: NodeId) -> Option<NodeId> {
+/// The `&mut Graph` core lets array loops emit N elements under one borrow.
+pub(super) fn binary_composite_g(g: &mut Graph, name: &str, a: NodeId, b: NodeId) -> Option<NodeId> {
     Some(match name {
         // copysign(a, b) = signbit(b) ? -|a| : |a|. NOT `|a| * sign(b)`: `sign`
         // now has numpy semantics (sign(0) = 0), which would zero the result
@@ -537,7 +557,7 @@ fn binary_composite(g: &SharedGraph, name: &str, a: NodeId, b: NodeId) -> Option
             g.binary(BinOp::Add, m, l)
         }
         // Floored modulo (`np.remainder` / `np.mod`); `fmod` stays the raw op.
-        "remainder" | "mod" => floored_mod(g, a, b),
+        "remainder" | "mod" => floored_mod_g(g, a, b),
         // heaviside(a, h0): 0 for a<0, h0 at a==0, 1 for a>0. Built from strict
         // Gt/Lt comparisons only — no tolerance-banded Eq involved.
         "heaviside" => {
@@ -552,6 +572,10 @@ fn binary_composite(g: &SharedGraph, name: &str, a: NodeId, b: NodeId) -> Option
     })
 }
 
+fn binary_composite(g: &SharedGraph, name: &str, a: NodeId, b: NodeId) -> Option<NodeId> {
+    g.with(|g| binary_composite_g(g, name, a, b))
+}
+
 /// Emit Python/numpy FLOORED modulo (`a % b`, `np.remainder`): the result's
 /// sign follows the DIVISOR, while the raw `Mod` op is C `fmod` (sign follows
 /// the dividend). Composes numpy's own fixup from existing ops:
@@ -560,7 +584,7 @@ fn binary_composite(g: &SharedGraph, name: &str, a: NodeId, b: NodeId) -> Option
 /// few ULP of zero, where the tolerance-banded `Ne` would wrongly suppress
 /// the fixup (a finite jump of `b`). `Gt(|m|, 0)` is exact and band-free.
 /// `np.fmod` keeps the raw `Mod` lowering.
-fn floored_mod(g: &SharedGraph, a: NodeId, b: NodeId) -> NodeId {
+pub(super) fn floored_mod_g(g: &mut Graph, a: NodeId, b: NodeId) -> NodeId {
     let m = g.binary(BinOp::Mod, a, b);
     let zero = g.constant(0.0);
     let m_neg = g.cmp(CmpOp::Lt, m, zero);
@@ -573,13 +597,17 @@ fn floored_mod(g: &SharedGraph, a: NodeId, b: NodeId) -> NodeId {
     g.select(fix, m_plus_b, m)
 }
 
+fn floored_mod(g: &SharedGraph, a: NodeId, b: NodeId) -> NodeId {
+    g.with(|g| floored_mod_g(g, a, b))
+}
+
 /// Emit `np.interp(x, xp, fp)` for one scalar node: piecewise-linear
 /// interpolation over ascending breakpoints, clamped to `fp[0]` / `fp[last]`
 /// outside the grid (numpy's default `left`/`right`). Lowered as a select
 /// chain — segment `i`'s line wins while `x >= xp[i]`, the final select pins
 /// the right clamp — so it traces, ADs (piecewise gradients) and codegens
 /// through existing ops.
-fn emit_interp(g: &SharedGraph, x: NodeId, xp: &[f64], fp: &[f64]) -> NodeId {
+pub(super) fn emit_interp_g(g: &mut Graph, x: NodeId, xp: &[f64], fp: &[f64]) -> NodeId {
     debug_assert_eq!(xp.len(), fp.len());
     debug_assert!(!xp.is_empty());
     let mut y = g.constant(fp[0]);
@@ -599,6 +627,10 @@ fn emit_interp(g: &SharedGraph, x: NodeId, xp: &[f64], fp: &[f64]) -> NodeId {
     let fl = g.constant(fp[last]);
     let cond = g.cmp(CmpOp::Ge, x, xl);
     g.select(cond, fl, y)
+}
+
+fn emit_interp(g: &SharedGraph, x: NodeId, xp: &[f64], fp: &[f64]) -> NodeId {
+    g.with(|g| emit_interp_g(g, x, xp, fp))
 }
 
 /// Extract `np.interp`'s constant breakpoint grids (`xp`, `fp`) from call args.
@@ -641,22 +673,41 @@ pub enum TraceArg<'a> {
 /// a trace, so the imperative `np.zeros(n)` idiom records constant nodes into
 /// the graph instead of allocating a real ndarray (which would reject tracer
 /// assignment with "cannot be converted to float").
-#[pyclass]
+#[pyclass(unsendable)]
 struct ArrayCtor {
     graph: SharedGraph,
     fill: f64,
     is_full: bool,
+    /// The real numpy constructor, for signatures the patch does not model
+    /// (integer/bool dtypes, order=, like=): delegating yields a plain
+    /// ndarray, which still traces for read-only use — instead of silently
+    /// minting f64 tracer nodes under a non-float dtype.
+    orig: Py<PyAny>,
 }
 
 #[pymethods]
 impl ArrayCtor {
-    #[pyo3(signature = (*args, **_kwargs))]
+    #[pyo3(signature = (*args, **kwargs))]
     fn __call__(
         &self,
         py: Python<'_>,
         args: &Bound<'_, PyTuple>,
-        _kwargs: Option<&Bound<'_, PyDict>>,
+        kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
+        // kwargs policy: model only a float dtype; delegate anything else.
+        if let Some(k) = kwargs {
+            for (key, val) in k.iter() {
+                let is_float_dtype = key.extract::<String>().is_ok_and(|k| k == "dtype")
+                    && py.import("numpy")
+                        .and_then(|np| np.call_method1("dtype", (val,)))
+                        .and_then(|d| d.getattr("kind"))
+                        .and_then(|kind| kind.extract::<String>())
+                        .is_ok_and(|kind| kind == "f");
+                if !is_float_dtype {
+                    return self.orig.bind(py).call(args, kwargs).map(|r| r.unbind());
+                }
+            }
+        }
         if args.is_empty() {
             return Err(PyValueError::new_err("array constructor requires a shape"));
         }
@@ -666,7 +717,8 @@ impl ArrayCtor {
         } else if let Ok(t) = shape_obj.extract::<Vec<usize>>() {
             t
         } else {
-            return Err(PyValueError::new_err("array constructor: unsupported shape"));
+            // Unmodelled shape argument: hand it to the real constructor.
+            return self.orig.bind(py).call(args, kwargs).map(|r| r.unbind());
         };
         let size: usize = shape.iter().product();
         let fill_node = if self.is_full {
@@ -692,7 +744,7 @@ impl ArrayCtor {
 /// `JitTracerArray` instead. Signatures the patch does not model (dtype=,
 /// retstep=, …) delegate to the saved original — the result is then a plain
 /// constant ndarray, which still traces for read-only use.
-#[pyclass]
+#[pyclass(unsendable)]
 struct ConstFactoryCtor {
     graph: SharedGraph,
     kind: &'static str,
@@ -847,6 +899,13 @@ impl ConstFactoryCtor {
     }
 }
 
+thread_local! {
+    /// Nesting depth of active traces. The numpy constructor monkeypatches are
+    /// installed only by the OUTERMOST trace: a nested trace re-patching would
+    /// save the outer patch as "original" and restore it wrongly on exit.
+    static TRACE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 pub fn trace_with_signature(
     py: Python<'_>,
     func: &Bound<'_, PyAny>,
@@ -893,8 +952,11 @@ pub fn trace_with_signature(
     // Monkeypatch numpy's array constructors for the duration of the call so the
     // imperative `dx = np.zeros(n); dx[i] = ...` idiom traces. These carry no
     // array argument, so __array_function__ cannot intercept them. Restored in
-    // every path before returning (success or error).
-    let np = py.import("numpy").ok();
+    // every path before returning (success or error). Only the OUTERMOST trace
+    // patches (see `TRACE_DEPTH`): a nested trace would capture the outer
+    // patch as its "original".
+    let outermost = TRACE_DEPTH.with(|d| { let v = d.get(); d.set(v + 1); v == 0 });
+    let np = if outermost { py.import("numpy").ok() } else { None };
     let mut saved: Vec<(&'static str, Py<PyAny>)> = Vec::new();
     if let Some(np) = np.as_ref() {
         for (name, fill, is_full) in [
@@ -902,7 +964,13 @@ pub fn trace_with_signature(
             ("ones", 1.0, false), ("full", 0.0, true),
         ] {
             if let Ok(orig) = np.getattr(name) {
-                if let Ok(ctor) = Py::new(py, ArrayCtor { graph: shared.clone(), fill, is_full }) {
+                let ctor = ArrayCtor {
+                    graph: shared.clone(),
+                    fill,
+                    is_full,
+                    orig: orig.clone().unbind(),
+                };
+                if let Ok(ctor) = Py::new(py, ctor) {
                     if np.setattr(name, ctor).is_ok() {
                         saved.push((name, orig.unbind()));
                     }
@@ -933,6 +1001,7 @@ pub fn trace_with_signature(
             let _ = np.setattr(*name, orig.bind(py));
         }
     }
+    TRACE_DEPTH.with(|d| d.set(d.get() - 1));
     let result = call_result?;
 
     // Extract outputs *before* locking the shared graph: the Python result
@@ -942,39 +1011,13 @@ pub fn trace_with_signature(
     if outputs.is_empty() { return Ok(None); }
 
     let mut graph = {
-        let mut g = shared.0.lock().unwrap();
+        let mut g = shared.0.borrow_mut();
         g.outputs = outputs;
         g.clone()
     };
 
     crate::ssa::optimize::optimize(&mut graph);
     Ok(Some(graph))
-}
-
-/// A shape-lazy op-graph for a traced Python operator, used to retain a traced
-/// block's math as an `alg_op` graph (so the IR / static compile can fuse it). The
-/// builder re-traces the callable at the connected input width with the given
-/// signature — the same `trace_with_signature` the runtime `LazyTraced` tape
-/// uses, so the IR op-graph and the runtime are the same source of truth.
-///
-/// `make_sig(width)` returns the trace signature at a given `u`-width. The
-/// callable need not be op-traceable at every width: a re-trace that produces no
-/// op-graph (e.g. data-dependent control flow, or a width the probe never saw)
-/// yields `None`, and the block falls back to its opaque runtime closure instead
-/// of panicking. `_label` is retained for debugging symmetry with the eager path.
-pub(crate) fn lazy_op_graph(
-    callable: pyo3::Py<pyo3::PyAny>,
-    _label: &'static str,
-    make_sig: impl Fn(usize) -> Vec<TraceArg<'static>> + 'static,
-) -> std::rc::Rc<crate::blocks::blockops::ShapeLazyGraph> {
-    crate::blocks::blockops::ShapeLazyGraph::new_fallible(move |w: usize| {
-        pyo3::Python::attach(|py| {
-            let bound = callable.bind(py);
-            // Trace failure (raised exception) or a non-op result both mean "no
-            // static graph at this width" -> opaque fallback.
-            trace_with_signature(py, bound, &make_sig(w)).ok().flatten()
-        })
-    })
 }
 
 /// Fixed op-graph for an identity output `y = x` over an `n`-element state — the
@@ -1000,19 +1043,21 @@ pub fn _trace_ode(
     let iv = crate::pybindings::py::extract_initial_value(initial_value)?;
     let n_x = iv.len();
 
-    // Classify-only probe: does the callback trace at all? A shape-mismatch
+    // Classify probe: does the callback trace at all? A shape-mismatch
     // error (ValueError from numpy ops like `betas @ u`) is fine — the
     // LazyTraced wrapper will retrace with the correct `u.len()` at runtime.
     // A TypeError or other fatal error (e.g. `if` on a tracer) propagates
     // so that `_trace_or_none` on the Python side falls back to the
-    // non-JIT factory, matching the pre-lazy behavior.
+    // non-JIT factory, matching the pre-lazy behavior. On success the probe
+    // graph SEEDS the LazyTraced cache, so a block whose resolved width
+    // matches the probe (the SISO case) never traces twice.
     let probe = trace_with_signature(py, func, &[
         TraceArg::Array { name: "x", size: n_x },
         TraceArg::Array { name: "u", size: 1 },
         TraceArg::Scalar { name: "t" },
     ]);
-    match probe {
-        Ok(Some(_)) => {}
+    let seed = match probe {
+        Ok(Some(g)) => Some(g),
         Ok(None) => return Ok(None),
         Err(e) => {
             // ValueError and IndexError usually signal a shape mismatch
@@ -1026,8 +1071,9 @@ pub fn _trace_ode(
             if !is_shape_error {
                 return Err(e);
             }
+            None
         }
-    }
+    };
 
     let callable = func.clone().unbind();
     let traced = LazyTraced::new(
@@ -1035,6 +1081,7 @@ pub fn _trace_ode(
         vec![SigArg::Array("x"), SigArg::Array("u"), SigArg::Scalar("t")],
         Some("x"),
     );
+    if let Some(g) = seed { traced.seed(g); }
 
     let mut blk = crate::blocks::block::Block::default_block();
     blk.type_name = "ODE";
@@ -1045,6 +1092,7 @@ pub fn _trace_ode(
     blk.engine = Some(crate::solvers::solver::Solver::with_defaults(&iv));
     blk.len_fn = Some(Box::new(|_| 0));
 
+    let traced_ir = traced.clone();
     let traced_dyn = traced.clone();
     blk.f_dyn = Some(Box::new(move |x, u, t, out| {
         traced_dyn.call_into(&[x, u, &[t]], out);
@@ -1057,12 +1105,9 @@ pub fn _trace_ode(
     }));
 
     // Retain the op atomization for the IR / static compile: alg is the identity
-    // `y = x`, dyn is the traced derivative `f(x, u, t)` (shape-lazy on `u`).
-    let dyn_lazy = lazy_op_graph(func.clone().unbind(), "ODE", move |w| vec![
-        TraceArg::Array { name: "x", size: n_x },
-        TraceArg::Array { name: "u", size: w },
-        TraceArg::Scalar { name: "t" },
-    ]);
+    // `y = x`, dyn is the traced derivative `f(x, u, t)` (shape-lazy on `u`,
+    // served from the SAME trace cache as the runtime tape).
+    let dyn_lazy = traced_ir.op_graph(move |w| vec![n_x, w, 1]);
     blk.op_type_name = Some("ODE");
     blk.alg_op = Some(crate::blocks::operator::Operator::graph_only(
         crate::blocks::blockops::RegionGraph::Fixed(state_identity_graph(n_x)),
@@ -1083,12 +1128,12 @@ pub fn _trace_function_block(
     use crate::pybindings::py::lazy::{LazyTraced, SigArg};
     use crate::pybindings::py::PyBlock;
 
-    // Classify-only probe (see _trace_ode above for details).
+    // Classify probe (see _trace_ode above); the probe graph seeds the cache.
     let probe = trace_with_signature(py, func, &[
         TraceArg::Array { name: "u", size: 1 },
     ]);
-    match probe {
-        Ok(Some(_)) => {}
+    let seed = match probe {
+        Ok(Some(g)) => Some(g),
         Ok(None) => return Ok(None),
         Err(e) => {
             // ValueError and IndexError usually signal a shape mismatch
@@ -1102,11 +1147,13 @@ pub fn _trace_function_block(
             if !is_shape_error {
                 return Err(e);
             }
+            None
         }
-    }
+    };
 
     let callable = func.clone().unbind();
     let traced = LazyTraced::new(callable, vec![SigArg::Array("u")], None);
+    if let Some(g) = seed { traced.seed(g); }
     let mut b = crate::blocks::block::Block::default_block();
     b.type_name = "Function";
     let t = traced.clone();
@@ -1114,11 +1161,9 @@ pub fn _trace_function_block(
         t.call_into(&[u], out);
     }));
     // Retain the traced graph as the block's op atomization so the IR / static
-    // compile can fuse it (shape-lazy on `u`).
-    let lazy = lazy_op_graph(func.clone().unbind(), "Function", |w| vec![
-        TraceArg::Array { name: "u", size: w },
-    ]);
-    b.set_alg_lazy("Function", lazy);
+    // compile can fuse it (shape-lazy on `u`, served from the same trace cache
+    // as the runtime tape).
+    b.set_alg_lazy("Function", traced.op_graph(|w| vec![w]));
     Ok(Some(PyBlock::wrap(std::rc::Rc::new(crate::utils::fastcell::FastCell::new(b)))))
 }
 

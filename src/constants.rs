@@ -90,6 +90,20 @@ pub const TEAR_EXACT_MAX_CONNS: usize = 16;
 
 pub const EVT_TOLERANCE: f64 = 1e-4;
 
+/// Cap on dense-output bisection probes per event localisation (each probe is
+/// one DAG update on interpolated states — cheap next to the full
+/// re-integration a secant retry costs, but still bounded).
+pub const DENSE_EVT_MAX_PROBES: usize = 32;
+
+/// Smallest θ the localisation probes (a retry ratio of ~0 would stall dt).
+pub const DENSE_EVT_THETA_MIN: f64 = 1e-6;
+
+/// Offset keeping the first probe strictly inside the step (θ < 1).
+pub const DENSE_EVT_THETA_EDGE: f64 = 1e-9;
+
+/// Bracket width at which the θ-bisection stops refining.
+pub const DENSE_EVT_THETA_WIDTH: f64 = 1e-12;
+
 // ======================================================================
 // Numerical Jacobian (fallback when no symbolic Jacobian exists)
 // ======================================================================

@@ -234,7 +234,7 @@ impl PySimulation {
         Solver=None,
         iterations_max=SIM_ITERATIONS_MAX,
         log=true,
-        diagnostics=false,
+        diagnostics=None,
         optimizer_history=None,
         tolerance_lte_abs=None,
         tolerance_lte_rel=None,
@@ -252,7 +252,7 @@ impl PySimulation {
         Solver: Option<&Bound<'_, PyAny>>,
         iterations_max: usize,
         log: bool,
-        diagnostics: bool,
+        diagnostics: Option<&Bound<'_, PyAny>>,
         optimizer_history: Option<usize>,
         tolerance_lte_abs: Option<f64>,
         tolerance_lte_rel: Option<f64>,
@@ -315,8 +315,35 @@ impl PySimulation {
         sim.dt_min = dt_min;
         sim.dt_max = dt_max;
         sim.iterations_max = iterations_max;
-        if diagnostics {
+        // One knob, three levels: False (off) | True (live snapshot) |
+        // "history" (snapshot + full per-step history). The history recorder
+        // in `_update_diagnostics` only fires when the snapshot is live, so
+        // "history" implies both.
+        let (diag_on, diag_hist) = match diagnostics {
+            None => (false, false),
+            Some(obj) => {
+                if let Ok(b) = obj.extract::<bool>() {
+                    (b, false)
+                } else if let Ok(s) = obj.extract::<String>() {
+                    if s == "history" {
+                        (true, true)
+                    } else {
+                        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                            "diagnostics must be False, True or 'history', got '{s}'"
+                        )));
+                    }
+                } else {
+                    return Err(pyo3::exceptions::PyTypeError::new_err(
+                        "diagnostics must be False, True or 'history'",
+                    ));
+                }
+            }
+        };
+        if diag_on {
             sim.diagnostics = Some(crate::utils::diagnostics::Diagnostics::new());
+        }
+        if diag_hist {
+            sim.diagnostics_history = Some(Vec::new());
         }
         if let Some(m) = optimizer_history {
             sim.set_optimizer_history(m);
@@ -764,6 +791,22 @@ impl PySimulation {
                 .map(|b| b.borrow().type_name.to_string())
                 .collect();
             super::events::py_diagnostics(d.clone(), block_labels)
+        })
+    }
+
+    /// The full per-timestep diagnostics history of the last run (enabled via
+    /// diagnostics_history=True). One snapshot per accepted step, in order;
+    /// cleared on `reset()`. None when history recording is off.
+    #[getter]
+    fn diagnostics_history(&self) -> Option<Vec<PyDiagnostics>> {
+        let sim = self.inner.borrow();
+        sim.diagnostics_history.as_ref().map(|hist| {
+            let block_labels: Vec<String> = sim.blocks.iter()
+                .map(|b| b.borrow().type_name.to_string())
+                .collect();
+            hist.iter()
+                .map(|d| super::events::py_diagnostics(d.clone(), block_labels.clone()))
+                .collect()
         })
     }
 
@@ -1562,6 +1605,20 @@ impl PyCompiledSimulation {
     #[pyo3(signature = (time=0.0))]
     fn reset(&mut self, time: f64) {
         self.inner.reset(time);
+    }
+
+    /// Counters of the last ``run`` call, as a dict — the compiled-path
+    /// analogue of the stats dict ``Simulation.run`` returns:
+    /// ``total_steps`` (accepted), ``rejected_steps`` (adaptive retries and
+    /// event-location re-steps), ``total_evals`` (derivative-tape calls).
+    #[getter]
+    fn stats(&self) -> HashMap<String, f64> {
+        let s = &self.inner.last_stats;
+        let mut out = HashMap::new();
+        out.insert("total_steps".to_string(), s.total_steps as f64);
+        out.insert("rejected_steps".to_string(), s.rejected_steps as f64);
+        out.insert("total_evals".to_string(), s.total_evals as f64);
+        out
     }
 
     /// Advance the simulation by `duration`, recording the trajectory. Mirrors

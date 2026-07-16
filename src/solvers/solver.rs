@@ -150,6 +150,38 @@ pub struct Solver {
     /// shooting state.  See `pss_close_period()` for the per-period hook.
     pub pss_ext: Option<PssExt>,
 
+    // -- Dense output (continuous extension over the last completed step) --
+    /// Timestep of the last completed step — the interpolation interval width.
+    /// See `solvers/dense.rs` for the interpolant itself.
+    pub dense_dt: f64,
+    /// True while the last completed step's interpolant is consumable. Set by
+    /// the `step` wrapper when the final stage of a step succeeds; cleared by
+    /// `push_state_history` (the next step's buffer overwrites `history[0]`,
+    /// which the interpolant reads as `x₀`) and by `revert` (step rejection).
+    pub dense_valid: bool,
+    /// The stage-0 slope `ks[0]` is `f(x₀, t₀)` — the Hermite left-endpoint
+    /// derivative (explicit RK with `c₀ = 0`, or an ESDIRK explicit first stage).
+    pub dense_f0: bool,
+    /// The last-stage slope `ks[s-1]` is `f(x₁, t₁)` — the right-endpoint
+    /// derivative (FSAL explicit RK, or a stiffly-accurate DIRK/ESDIRK).
+    pub dense_f1: bool,
+    /// Tableau dense-output matrix (`Tableau::di`); empty = use the Hermite
+    /// fallback tiered by `dense_f0`/`dense_f1`.
+    pub dense_di: &'static [&'static [f64]],
+    /// Stash of `x₁` while [`dense_seek`](Self::dense_seek) has repositioned
+    /// `x` inside the step (event localisation); restored by `dense_seek_end`.
+    pub dense_stash: Vec<f64>,
+    /// True while `x` holds a seeked (interpolated) state instead of `x₁`.
+    pub dense_seeking: bool,
+    /// Multistep (BDF/GEAR) dense output: number of past history states the
+    /// interpolant runs through. The continuous extension is then the
+    /// degree-`dense_hist` Lagrange polynomial through `x₁` and
+    /// `history[0..dense_hist]` at their actual variable-step times
+    /// (`history_dt`) — the same local polynomial the BDF formula assumes.
+    /// The multistep factory keeps this synced to the active order; `0`
+    /// (default) selects the single-step tiers.
+    pub dense_hist: usize,
+
     // -- Type name for debugging --
     pub type_name: &'static str,
 
@@ -226,6 +258,14 @@ impl Solver {
             buffer_fn: None,
             stage_builder: None,
             pss_ext: None,
+            dense_dt: 0.0,
+            dense_valid: false,
+            dense_f0: false,
+            dense_f1: false,
+            dense_di: &[],
+            dense_stash: Vec::new(),
+            dense_seeking: false,
+            dense_hist: 0,
             type_name: "Solver",
             nan_reported: std::cell::Cell::new(false),
         }
@@ -297,8 +337,33 @@ impl Solver {
 
     pub fn get(&self) -> &[f64] { &self.x }
     pub fn set(&mut self, x: &[f64]) {
+        // External state replacement (event actions, FMU event handlers,
+        // Python bindings) breaks the completed-step coherence the dense
+        // window promises — close it.
+        self.dense_close();
         self.x.resize(x.len(), 0.0);
         self.x.copy_from_slice(x);
+    }
+
+    /// Open the dense-output window over a just-completed step of width `dt`
+    /// (see `solvers/dense.rs`). Single owner of the window lifecycle,
+    /// together with [`dense_close`](Self::dense_close).
+    #[inline]
+    pub fn dense_open(&mut self, dt: f64) {
+        self.dense_dt = dt;
+        self.dense_valid = true;
+    }
+
+    /// Close the dense-output window and abandon any in-progress seek
+    /// *without* restoring `x` (callers that need `x₁` back use
+    /// [`dense_seek_end`](Self::dense_seek_end) first; `revert`/`buffer`
+    /// overwrite `x` anyway). Called from every mutation that breaks the
+    /// window's coherence: the next buffer, a revert, a reset, and an
+    /// external `set`.
+    #[inline]
+    pub fn dense_close(&mut self) {
+        self.dense_valid = false;
+        self.dense_seeking = false;
     }
 
     /// Reconfigure the Anderson history depth on the installed optimizer.
@@ -361,6 +426,7 @@ impl Solver {
         self.history_dt.clear();
         for k in &mut self.ks { k.clear(); }
         self.err_prev = 0.0;
+        self.dense_close();
     }
 
     // -- buffer (overridable) --
@@ -369,6 +435,9 @@ impl Solver {
     /// oldest `Vec` allocation once at capacity. Single source of truth for the
     /// state-history ring across every solver's buffer path.
     pub fn push_state_history(&mut self) {
+        // The interpolant reads `history[0]` as its `x₀`; a new buffer starts
+        // the next step and shifts that meaning, so the old interval closes.
+        self.dense_close();
         if self.history.len() >= self.history_maxlen {
             // Recycle the oldest entry to avoid allocation.
             if let Some(mut recycled) = self.history.pop_back() {
@@ -419,6 +488,8 @@ impl Solver {
     /// equation and mis-direct convergence.  Restarting on every revert —
     /// LTE-driven or convergence-failure-driven — is the only correct policy.
     pub fn revert(&mut self) {
+        // A rejected step's stage data is garbage for interpolation.
+        self.dense_close();
         if let Some(prev) = self.history.pop_front() {
             self.x = prev;
         }
@@ -500,6 +571,12 @@ impl Solver {
         if let Some(mut step_fn) = self.step_fn.take() {
             let result = step_fn(self, f, dt);
             self.step_fn = Some(step_fn);
+            // A successful final stage completes the step [x₀ → x] and opens
+            // the dense-output window over it (closed again by the next
+            // `push_state_history` or by `revert` — see `solvers/dense.rs`).
+            if result.0 && self.is_last_stage() && !self.history.is_empty() {
+                self.dense_open(dt);
+            }
             return result;
         }
         (true, 0.0, None) // Default: no-op

@@ -41,6 +41,13 @@ pub struct Tableau {
     /// Non-stiffly-accurate final-row coefficients.
     /// Empty slice = last bt row is also the output row.
     pub a_final: &'static [f64],
+    /// Dense-output interpolant matrix `P` (empty = none; the solver falls back
+    /// to the generic Hermite interpolant).  `di[i][q]` weights slope `k_i` by
+    /// `θ^(q+1)`, giving the continuous extension
+    /// `x(t₀+θh) = x₀ + h·Σ_i k_i·Σ_q di[i][q]·θ^(q+1)` for `θ ∈ [0, 1]`.
+    /// Row sums must equal `b` so `θ = 1` reproduces `x₁` exactly (asserted in
+    /// tests).
+    pub di: &'static [&'static [f64]],
 }
 
 impl Tableau {
@@ -59,7 +66,7 @@ pub const SSPRK22: Tableau = Tableau {
     n: 2, m: 0, s: 2,
     eval_stages: &[0.0, 1.0],
     bt: &[&[1.0], &[0.5, 0.5]],
-    tr: &[], a_final: &[],
+    tr: &[], a_final: &[], di: &[],
 };
 
 pub const RK4: Tableau = Tableau {
@@ -73,7 +80,7 @@ pub const RK4: Tableau = Tableau {
         &[0.0, 0.0, 1.0],
         &[1.0/6.0, 2.0/6.0, 2.0/6.0, 1.0/6.0],
     ],
-    tr: &[], a_final: &[],
+    tr: &[], a_final: &[], di: &[],
 };
 
 pub const SSPRK33: Tableau = Tableau {
@@ -86,7 +93,7 @@ pub const SSPRK33: Tableau = Tableau {
         &[0.25, 0.25],
         &[1.0/6.0, 1.0/6.0, 2.0/3.0],
     ],
-    tr: &[], a_final: &[],
+    tr: &[], a_final: &[], di: &[],
 };
 
 pub const SSPRK34: Tableau = Tableau {
@@ -100,7 +107,7 @@ pub const SSPRK34: Tableau = Tableau {
         &[1.0/6.0, 1.0/6.0, 1.0/6.0],
         &[1.0/6.0, 1.0/6.0, 1.0/6.0, 0.5],
     ],
-    tr: &[], a_final: &[],
+    tr: &[], a_final: &[], di: &[],
 };
 
 // ======================================================================================
@@ -118,7 +125,7 @@ pub const RKF21: Tableau = Tableau {
         &[1.0/512.0, 255.0/256.0, 1.0/512.0],
     ],
     tr: &[1.0/512.0, 0.0, -1.0/512.0],
-    a_final: &[],
+    a_final: &[], di: &[],
 };
 
 pub const RKBS32: Tableau = Tableau {
@@ -134,6 +141,14 @@ pub const RKBS32: Tableau = Tableau {
     ],
     tr: &[-5.0/72.0, 1.0/12.0, 1.0/9.0, -1.0/8.0],
     a_final: &[],
+    // Bogacki-Shampine 3rd-order continuous extension (the FSAL slope k4 gives
+    // the endpoint derivative; same coefficients as scipy's RK23).
+    di: &[
+        &[1.0, -4.0/3.0, 5.0/9.0],
+        &[0.0, 1.0, -2.0/3.0],
+        &[0.0, 4.0/3.0, -8.0/9.0],
+        &[0.0, -1.0, 1.0],
+    ],
 };
 
 pub const RKF45: Tableau = Tableau {
@@ -155,7 +170,7 @@ pub const RKF45: Tableau = Tableau {
         &[16.0/135.0, 0.0, 6656.0/12825.0, 28561.0/56430.0, -9.0/50.0, 2.0/55.0],
     ],
     tr: &[1.0/360.0, 0.0, -128.0/4275.0, -2197.0/75240.0, 1.0/50.0, 2.0/55.0],
-    a_final: &[],
+    a_final: &[], di: &[],
 };
 
 pub const RKCK54: Tableau = Tableau {
@@ -172,7 +187,7 @@ pub const RKCK54: Tableau = Tableau {
         &[37.0/378.0, 0.0, 250.0/621.0, 125.0/594.0, 0.0, 512.0/1771.0],
     ],
     tr: &[-277.0/64512.0, 0.0, 6925.0/370944.0, -6925.0/202752.0, -277.0/14336.0, 277.0/7084.0],
-    a_final: &[],
+    a_final: &[], di: &[],
 };
 
 pub const RKDP54: Tableau = Tableau {
@@ -191,6 +206,18 @@ pub const RKDP54: Tableau = Tableau {
     ],
     tr: &[71.0/57600.0, 0.0, -71.0/16695.0, 71.0/1920.0, -17253.0/339200.0, 22.0/525.0, -1.0/40.0],
     a_final: &[],
+    // Shampine's 4th-order continuous extension for Dormand-Prince 5(4)
+    // (the interpolant behind scipy RK45 / Hairer DOPRI5's CONTD5). Row sums
+    // equal b, so θ = 1 reproduces x₁ bit-exactly.
+    di: &[
+        &[1.0, -8048581381.0/2820520608.0, 8663915743.0/2820520608.0, -12715105075.0/11282082432.0],
+        &[0.0, 0.0, 0.0, 0.0],
+        &[0.0, 131558114200.0/32700410799.0, -68118460800.0/10900136933.0, 87487479700.0/32700410799.0],
+        &[0.0, -1754552775.0/470086768.0, 14199869525.0/1410260304.0, -10690763975.0/1880347072.0],
+        &[0.0, 127303824393.0/49829197408.0, -318862633887.0/49829197408.0, 701980252875.0/199316789632.0],
+        &[0.0, -282668133.0/205662961.0, 2019193451.0/616988883.0, -1453857185.0/822651844.0],
+        &[0.0, 40617522.0/29380423.0, -110615467.0/29380423.0, 69997945.0/29380423.0],
+    ],
 };
 
 pub const RKV65: Tableau = Tableau {
@@ -222,7 +249,7 @@ pub const RKV65: Tableau = Tableau {
         5.0/72.0 - (-2105.0/35532.0),
         0.0 - 2995.0/17766.0,
     ],
-    a_final: &[],
+    a_final: &[], di: &[],
 };
 
 pub const RKF78: Tableau = Tableau {
@@ -246,7 +273,7 @@ pub const RKF78: Tableau = Tableau {
         &[41.0/840.0, 0.0, 0.0, 0.0, 0.0, 34.0/105.0, 9.0/35.0, 9.0/35.0, 9.0/280.0, 9.0/280.0, 41.0/840.0],
     ],
     tr: &[41.0/840.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 41.0/840.0, -41.0/840.0, -41.0/840.0],
-    a_final: &[],
+    a_final: &[], di: &[],
 };
 
 pub const RKDP87: Tableau = Tableau {
@@ -285,7 +312,7 @@ pub const RKDP87: Tableau = Tableau {
         -528747749.0/2220607170.0 - 2.0/45.0,
         0.25,
     ],
-    a_final: &[],
+    a_final: &[], di: &[],
 };
 
 // ======================================================================================
@@ -299,7 +326,7 @@ pub const DIRK2: Tableau = Tableau {
     eval_stages: &[0.25, 0.75],
     bt: &[&[0.25], &[0.5, 0.25]],
     tr: &[],
-    a_final: &[0.5, 0.5],
+    a_final: &[0.5, 0.5], di: &[],
 };
 
 pub const DIRK3: Tableau = Tableau {
@@ -313,7 +340,7 @@ pub const DIRK3: Tableau = Tableau {
         &[-0.5, 0.5, 0.5],
         &[1.5, -1.5, 0.5, 0.5],
     ],
-    tr: &[], a_final: &[],
+    tr: &[], a_final: &[], di: &[],
 };
 
 pub const ESDIRK4: Tableau = Tableau {
@@ -329,7 +356,7 @@ pub const ESDIRK4: Tableau = Tableau {
         &[46010759.0/749250000.0, -737693.0/40500000.0, 10931269.0/45500000.0, -1140071.0/34090875.0, 0.25],
         &[89.0/444.0, 89.0/804756.0, -27.0/364.0, -20000.0/171717.0, 843750.0/1140071.0, 0.25],
     ],
-    tr: &[], a_final: &[],
+    tr: &[], a_final: &[], di: &[],
 };
 
 // ======================================================================================
@@ -348,7 +375,7 @@ pub const ESDIRK32: Tableau = Tableau {
         &[7.0/18.0, 1.0/3.0, -2.0/9.0, 0.5],
     ],
     tr: &[-1.0/9.0, -1.0/6.0, -2.0/9.0, 0.5],
-    a_final: &[],
+    a_final: &[], di: &[],
 };
 
 const ESDIRK43_G: f64 = 0.25;  // diagonal entry
@@ -383,7 +410,7 @@ pub const ESDIRK43: Tableau = Tableau {
         -3.0/28.0 - (-263368882881.0/4213126269514.0),
         ESDIRK43_G - 3295468053953.0/15064441987965.0,
     ],
-    a_final: &[],
+    a_final: &[], di: &[],
 };
 
 // Kennedy/Carpenter 2019 "ESDIRK5(4)8L[2]SAb" (Appl. Numer. Math. 146:221-244).
@@ -429,7 +456,7 @@ pub const ESDIRK54: Tableau = Tableau {
         -1142099968913.0/5710983926999.0 - (-5266607656330.0/36788968843917.0),
         ESDIRK54_G - 1074053359553.0/5740751784926.0,
     ],
-    a_final: &[],
+    a_final: &[], di: &[],
 };
 
 // ======================================================================================

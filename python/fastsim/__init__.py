@@ -12,4 +12,4 @@ from fastsim.adapter import adapt
 from fastsim.port import port
 from fastsim.random import random_uniform, random_normal
 
-__version__ = "0.19.0"
+__version__ = "0.20.0"

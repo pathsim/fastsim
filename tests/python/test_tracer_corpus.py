@@ -267,15 +267,61 @@ CORPUS = [
     _case("scipy_expit", 1, TRACED if HAS_SCIPY else STRUCTURAL,
           (lambda x, t: _sps.expit(x[0])) if HAS_SCIPY else (lambda x, t: x[0])),
 
-    # =========================================================================
-    # GAPS — known coverage holes. Trace MUST fail today; flip when closed.
-    # =========================================================================
-    _case("np_argmax", 3, GAP, lambda x, t: np.argmax(x) * 1.0),
-    _case("np_linalg_solve_2x2", 2, GAP,
+    # ---------------- former GAPs, closed by the tracer-review fixes --------
+    _case("np_argmax", 3, TRACED, lambda x, t: np.argmax(x) * 1.0),
+    _case("np_argmin", 3, TRACED, lambda x, t: np.argmin(x) * 1.0),
+    _case("method_argmax_argmin", 4, TRACED,
+          lambda x, t: x.argmax() * 10.0 + x.argmin()),
+    _case("np_linalg_solve_2x2", 2, TRACED,
           lambda x, t: np.linalg.solve(np.array([[2.0, 1.0], [1.0, 3.0]]), x)),
+    _case("np_linalg_solve_3x3", 3, TRACED,
+          lambda x, t: np.linalg.solve(
+              np.array([[4.0, 1.0, 0.0], [1.0, 3.0, -1.0], [0.0, -1.0, 2.0]]), x)),
+    _case("np_select", 3, TRACED,
+          lambda x, t: np.select([x > 1.0, x > 0.0], [x, 0.5 * x], default=-1.0)),
+    _case("np_searchsorted_left", 1, TRACED,
+          lambda x, t: np.searchsorted([-2.0, 0.0, 1.5, 3.0], x[0]) * 1.0),
+    _case("np_searchsorted_right", 1, TRACED,
+          lambda x, t: np.searchsorted([-2.0, 0.0, 1.5, 3.0], x[0], side="right") * 1.0),
+    _case("np_searchsorted_array", 3, TRACED,
+          lambda x, t: np.searchsorted([-2.0, 0.0, 1.5, 3.0], x) * 1.0),
+    _case("method_var_std_ddof", 4, TRACED,
+          lambda x, t: x.var(ddof=1) + x.std(ddof=1)),
+    _case("method_cumsum_cumprod", 3, TRACED,
+          lambda x, t: x.cumsum() + x.cumprod()),
 
     # -- bool masks stay structural: the output SHAPE depends on runtime values --
     _case("bool_mask_getitem", 3, STRUCTURAL, lambda x, t: x[np.array([True, False, True])]),
+
+    # =========================================================================
+    # Fixed miscompiles (doc/tracer-review.md P0) — pinned as TRACED so a
+    # regression reintroduces a loud failure, not a silent divergence.
+    # =========================================================================
+    # P0-1 (fixed): var/std support ddof; other kwargs reject → fallback.
+    _case("var_ddof", 4, TRACED, lambda x, t: np.var(x, ddof=1)),
+    _case("std_ddof", 4, TRACED, lambda x, t: np.std(x, ddof=1)),
+    # P0-2 (fixed): np.diff supports integer n (positional and kwarg).
+    _case("diff_order2", 4, TRACED, lambda x, t: np.diff(x, 2)),
+    _case("diff_order_kwarg", 4, TRACED, lambda x, t: np.diff(x, n=2)),
+    # P0-3 (fixed): unknown reduction kwargs now REJECT the trace (fail-open
+    # fallback) instead of being silently ignored.
+    _case("sum_where_rejected", 4, GAP,
+          lambda x, t: np.sum(x, where=np.array([True, True, False, False]))),
+    _case("sum_initial_rejected", 4, GAP,
+          lambda x, t: np.sum(x, initial=10.0)),
+    # P0-5 (fixed): hstack/vstack of 2-D inputs concatenate along the correct
+    # axis with the correct output shape.
+    _case("hstack_2d", 4, TRACED,
+          lambda x, t: np.hstack([x.reshape(2, 2), x.reshape(2, 2)]).ravel()),
+    _case("vstack_2d", 4, TRACED,
+          lambda x, t: (np.vstack([x.reshape(2, 2), x.reshape(2, 2)]) @ x[:2])),
+    _case("vstack_1d_shape", 3, TRACED,
+          lambda x, t: (np.vstack([x, 2.0 * x]) @ x)),
+    # P1-7/8 (fixed): np.where and np.clip keep N-D shapes through the trace.
+    _case("where_2d_shape", 4, TRACED,
+          lambda x, t: np.where(x.reshape(2, 2) > 0, x.reshape(2, 2), 0.0) @ x[:2]),
+    _case("clip_2d_shape", 4, TRACED,
+          lambda x, t: np.clip(x.reshape(2, 2), -1.0, 1.0) @ x[:2]),
 
     # =========================================================================
     # STRUCTURAL — never traceable (Python forces a concrete value).
@@ -364,12 +410,28 @@ def _parity(compiled, fn, n_x, rtol=1e-12, atol=1e-12):
         x = _sample_x(n_x, shift=0.1 * i)
         ref = np.asarray(fn(x.copy(), t), dtype=float).ravel()
         got = np.atleast_1d(np.asarray(compiled(x, t), dtype=float)).ravel()
-        assert got.shape == ref.shape, (
-            f"output arity: traced {got.shape} vs eager {ref.shape}")
+        if got.shape != ref.shape:
+            # An arity mismatch IS a divergence (e.g. np.diff's ignored `n`):
+            # report it like a value mismatch so MISCOMPILE entries can pin it.
+            return False, ref, got
         ok = np.allclose(got, ref, rtol=rtol, atol=atol)
         if not ok:
             return False, ref, got
     return True, None, None
+
+
+def test_dot_size_mismatch_raises():
+    """Fixed (doc/tracer-review.md P0-4): np.dot/np.inner with mismatched
+    operand sizes raise during the trace, exactly like eager numpy — instead
+    of silently contracting over min(len)."""
+    for fn in (
+        lambda x, t: np.dot(x[:3], [1.0, 2.0]),
+        lambda x, t: np.inner(x[:3], [1.0, 2.0]),
+    ):
+        with pytest.raises(ValueError):
+            fn(_sample_x(4), 0.7)  # eager numpy rejects the shapes
+        with pytest.raises(ValueError):
+            jit(fn, n_x=4)  # and so does the trace
 
 
 @pytest.mark.parametrize("fn,n_x,status", CORPUS)

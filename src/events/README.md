@@ -55,3 +55,20 @@ state.
   then bisection; events that don't bracket skip the bisection entirely.
 - The event loop processes events in firing-time order so a single
   step can handle multiple co-firing events without restart.
+- **Dense-output localisation** (adaptive runs): before the retry, the
+  crossing is root-found on the solvers' step interpolant
+  (`Simulation::_localize_events_theta` → `Solver::dense_seek`): each probe
+  repositions the dynamic states on the interpolant and refreshes the DAG —
+  one system update instead of one full re-integration per secant retry, so
+  the single retry lands within tolerance. Default on; opt out via
+  `sim.dense_events = false` or `FASTSIM_DENSE_EVENTS=0`.
+  The localizer is a *pure accelerator*: it only overrides the legacy secant
+  ratio when the probes converge onto a θ every bracketed event is already
+  close at (so the retry provably resolves); otherwise — `Condition` events
+  (time-based close test), crossings the interpolant cannot reproduce, or
+  models whose engines expose no interpolant (e.g. Subsystem wrappers) — it
+  returns `None` and the legacy retry cascade with its termination guarantees
+  runs unchanged. Probe updates run on throw-away interpolated states:
+  `Event::detect` implementations must stay effectively pure (they are today;
+  irreversible work belongs in `resolve`), and algebraic-loop nonconvergence
+  during a probe is not recorded into the run outcome (`Simulation::_probing`).

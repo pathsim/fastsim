@@ -31,6 +31,24 @@ fn probe_proceed<T>(py: Python<'_>, probe: PyResult<Option<T>>) -> PyResult<bool
     }
 }
 
+/// `probe_proceed` variant that keeps the probe graph on success so the
+/// caller can seed it into the `LazyTraced` cache (saving the first runtime
+/// retrace when the probe shape matches the resolved shape — the SISO case).
+/// `Ok(None)` = not traceable (caller falls back); `Ok(Some(None))` = proceed
+/// without a seed (shape error, retrace at the real width); `Ok(Some(Some(g)))`
+/// = proceed with the probe graph as seed.
+fn probe_keep<T>(py: Python<'_>, probe: PyResult<Option<T>>) -> PyResult<Option<Option<T>>> {
+    match probe {
+        Ok(Some(g)) => Ok(Some(Some(g))),
+        Ok(None) => Ok(None),
+        Err(e) => {
+            let is_shape = e.is_instance_of::<pyo3::exceptions::PyValueError>(py)
+                || e.is_instance_of::<pyo3::exceptions::PyIndexError>(py);
+            if is_shape { Ok(Some(None)) } else { Err(e) }
+        }
+    }
+}
+
 /// JIT-compile a DynamicalSystem: traces `func_dyn(x, u, t)` and
 /// `func_alg(x, u, t)` into separate graphs; derives `∂f_dyn/∂x` via AD.
 #[pyfunction]
@@ -64,8 +82,10 @@ pub fn _trace_dynamical_system(
     // a value, an unsupported op) just means THAT operator runs in Python via its
     // LazyTraced fallback; it must not disqualify the other operator. So tolerate
     // every per-operator outcome here and let each LazyTraced self-manage.
-    let dyn_traceable = matches!(trace_with_signature(py, func_dyn, sig), Ok(Some(_)));
-    let alg_traceable = matches!(trace_with_signature(py, func_alg, sig), Ok(Some(_)));
+    let dyn_probe = trace_with_signature(py, func_dyn, sig).ok().flatten();
+    let alg_probe = trace_with_signature(py, func_alg, sig).ok().flatten();
+    let dyn_traceable = dyn_probe.is_some();
+    let alg_traceable = alg_probe.is_some();
     let any_traceable = dyn_traceable || alg_traceable;
     // Nothing traced → let the caller use its plain Python-callback constructor
     // (identical behaviour, one less LazyTraced layer).
@@ -74,6 +94,10 @@ pub fn _trace_dynamical_system(
     let sig_args = || vec![SigArg::Array("x"), SigArg::Array("u"), SigArg::Scalar("t")];
     let traced_dyn = LazyTraced::new(func_dyn.clone().unbind(), sig_args(), Some("x"));
     let traced_alg = LazyTraced::new(func_alg.clone().unbind(), sig_args(), None);
+    // Seed the caches with the probe graphs — a block whose resolved width
+    // matches the probe (SISO) never traces twice.
+    if let Some(g) = dyn_probe { traced_dyn.seed(g); }
+    if let Some(g) = alg_probe { traced_alg.seed(g); }
 
     let mut blk = crate::blocks::block::Block::default_block();
     blk.type_name = "DynamicalSystem";
@@ -87,6 +111,8 @@ pub fn _trace_dynamical_system(
         if !b._active { 0 } else if has_passthrough { 1 } else { 0 }
     }));
 
+    let traced_dyn_ir = traced_dyn.clone();
+    let traced_alg_ir = traced_alg.clone();
     let td = traced_dyn.clone();
     blk.f_dyn = Some(Box::new(move |x, u, t, out| {
         td.call_into(&[x, u, &[t]], out);
@@ -103,23 +129,10 @@ pub fn _trace_dynamical_system(
     // Op atomization for IR / static compile — only when BOTH operators are
     // op-traceable (otherwise the fused math would be incomplete, so the block
     // stays opaque and runs via its per-operator LazyTraced/Python fallback).
+    // Both regions are served from the SAME trace caches as the runtime tapes.
     if dyn_traceable && alg_traceable {
-        let alg_lazy = crate::tracer::lazy_op_graph(
-            func_alg.clone().unbind(), "DynamicalSystem",
-            move |w| vec![
-                TraceArg::Array { name: "x", size: n },
-                TraceArg::Array { name: "u", size: w },
-                TraceArg::Scalar { name: "t" },
-            ],
-        );
-        let dyn_lazy = crate::tracer::lazy_op_graph(
-            func_dyn.clone().unbind(), "DynamicalSystem",
-            move |w| vec![
-                TraceArg::Array { name: "x", size: n },
-                TraceArg::Array { name: "u", size: w },
-                TraceArg::Scalar { name: "t" },
-            ],
-        );
+        let alg_lazy = traced_alg_ir.op_graph(move |w| vec![n, w, 1]);
+        let dyn_lazy = traced_dyn_ir.op_graph(move |w| vec![n, w, 1]);
         blk.op_type_name = Some("DynamicalSystem");
         blk.alg_op = Some(crate::blocks::operator::Operator::graph_only(
             crate::blocks::blockops::RegionGraph::Lazy(alg_lazy),
@@ -146,9 +159,9 @@ pub fn _trace_dynamical_function(
         TraceArg::Array { name: "u", size: 1 },
         TraceArg::Scalar { name: "t" },
     ]);
-    if !probe_proceed(py, probe)? {
+    let Some(seed) = probe_keep(py, probe)? else {
         return Ok(None);
-    }
+    };
 
     let callable = func.clone().unbind();
     let traced = LazyTraced::new(
@@ -156,18 +169,16 @@ pub fn _trace_dynamical_function(
         vec![SigArg::Array("u"), SigArg::Scalar("t")],
         None,
     );
+    if let Some(g) = seed { traced.seed(g); }
     let mut blk = crate::blocks::block::Block::default_block();
     blk.type_name = "DynamicalFunction";
     let t = traced.clone();
     blk.f_alg = Some(Box::new(move |_x, u, ti, out| {
         t.call_into(&[u, &[ti]], out);
     }));
-    // Op atomization for IR / static compile (shape-lazy on `u`, reads time).
-    let alg_lazy = crate::tracer::lazy_op_graph(func.clone().unbind(), "DynamicalFunction", |w| vec![
-        TraceArg::Array { name: "u", size: w },
-        TraceArg::Scalar { name: "t" },
-    ]);
-    blk.set_alg_lazy("DynamicalFunction", alg_lazy);
+    // Op atomization for IR / static compile (shape-lazy on `u`, reads time),
+    // served from the same trace cache as the runtime tape.
+    blk.set_alg_lazy("DynamicalFunction", traced.op_graph(|w| vec![w, 1]));
     Ok(Some(PyBlock::wrap(Rc::new(FastCell::new(blk)))))
 }
 
@@ -187,11 +198,12 @@ pub fn _trace_wrapper(
     let probe = trace_with_signature(py, func, &[
         TraceArg::Array { name: "u", size: 1 },
     ]);
-    if !probe_proceed(py, probe)? {
+    let Some(seed) = probe_keep(py, probe)? else {
         return Ok(None);
-    }
+    };
 
     let traced = LazyTraced::new(func.clone().unbind(), vec![SigArg::Array("u")], None);
+    if let Some(g) = seed { traced.seed(g); }
 
     // Output buffer sizes itself at the first scheduled evaluation.
     let output: Rc<FastCell<Vec<f64>>> = Rc::new(FastCell::new(Vec::new()));

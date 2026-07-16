@@ -29,7 +29,7 @@ enum Source {
 }
 
 /// A symbolic array (an input slot, or a computed array like a matmul result).
-#[pyclass(name = "JitTracerArray", from_py_object)]
+#[pyclass(name = "JitTracerArray", from_py_object, unsendable)]
 #[derive(Clone)]
 pub struct JitTracerArray {
     graph: SharedGraph,
@@ -303,14 +303,16 @@ impl JitTracerArray {
         other: ArrayBinArg,
         swap: bool,
     ) -> PyResult<Py<PyAny>> {
-        self.array_elementwise(py, other, swap, |a, b| self.graph.binary(op, a, b))
+        self.array_elementwise(py, other, swap, |g, a, b| g.binary(op, a, b))
     }
 
     /// Element-wise unary op: apply `op` to every element, preserving shape.
+    /// Emits all N nodes under one graph borrow.
     fn array_unary(&self, py: Python<'_>, op: UnaryOp) -> PyResult<Py<PyAny>> {
-        let nodes: Vec<NodeId> = (0..self.size)
-            .map(|i| self.graph.unary(op, self.get_node(i)))
-            .collect();
+        let ids = self.materialize();
+        let nodes: Vec<NodeId> = self.graph.with(|g| {
+            ids.iter().map(|&x| g.unary(op, x)).collect()
+        });
         Ok(Py::new(py, JitTracerArray::from_nodes_shape(&self.graph, nodes, self.shape.clone()))?.into_any().into())
     }
 
@@ -322,18 +324,19 @@ impl JitTracerArray {
         other: ArrayBinArg,
         swap: bool,
     ) -> PyResult<Py<PyAny>> {
-        self.array_elementwise(py, other, swap, |a, b| self.graph.cmp(op, a, b))
+        self.array_elementwise(py, other, swap, |g, a, b| g.cmp(op, a, b))
     }
 
     /// Core N-D broadcasting walker.  Produces one output element per broadcast
-    /// position by calling `emit(self_node, other_node)` (or swapped).  Scalar
-    /// operands (Float, Tracer) take a fast path with no index expansion.
+    /// position by calling `emit(graph, self_node, other_node)` (or swapped).
+    /// Scalar operands (Float, Tracer) take a fast path with no index
+    /// expansion. All element nodes are emitted under ONE graph borrow.
     fn array_elementwise(
         &self,
         py: Python<'_>,
         other: ArrayBinArg,
         swap: bool,
-        emit: impl Fn(NodeId, NodeId) -> NodeId,
+        emit: impl Fn(&mut Graph, NodeId, NodeId) -> NodeId,
     ) -> PyResult<Py<PyAny>> {
         // Scalar-fast-path: output shape = self.shape, no index machinery.
         let scalar_node: Option<NodeId> = match &other {
@@ -342,11 +345,13 @@ impl JitTracerArray {
             _ => None,
         };
         if let Some(c) = scalar_node {
-            let nodes: Vec<NodeId> = (0..self.size).map(|i| {
-                let x = self.get_node(i);
-                let (a, b) = if swap { (c, x) } else { (x, c) };
-                emit(a, b)
-            }).collect();
+            let ids = self.materialize();
+            let nodes: Vec<NodeId> = self.graph.with(|g| {
+                ids.iter().map(|&x| {
+                    let (a, b) = if swap { (c, x) } else { (x, c) };
+                    emit(g, a, b)
+                }).collect()
+            });
             return Ok(Py::new(py, JitTracerArray::from_nodes_shape(&self.graph, nodes, self.shape.clone()))?.into_any().into());
         }
 
@@ -356,7 +361,9 @@ impl JitTracerArray {
             ArrayBinArg::TracerArray(ta) => (ta.shape.clone(), ta.materialize()),
             ArrayBinArg::NdArray(vs) => {
                 let shape = vec![vs.len()];
-                let nodes: Vec<NodeId> = vs.iter().map(|v| self.graph.constant(*v)).collect();
+                let nodes: Vec<NodeId> = self.graph.with(|g| {
+                    vs.iter().map(|v| g.constant(*v)).collect()
+                });
                 (shape, nodes)
             }
             _ => unreachable!("scalar case handled above"),
@@ -369,22 +376,25 @@ impl JitTracerArray {
         let self_nodes = self.materialize();
         let n_out = out_shape.len();
 
-        let mut nodes = Vec::with_capacity(out_size);
-        let mut idx = vec![0usize; n_out];
-        for _ in 0..out_size {
-            let self_flat = bcast_src_flat(&idx, &self.shape, &self_strides);
-            let other_flat = bcast_src_flat(&idx, &other_shape, &other_strides);
-            let x = self_nodes[self_flat];
-            let y = other_nodes[other_flat];
-            let (a, b) = if swap { (y, x) } else { (x, y) };
-            nodes.push(emit(a, b));
-            // row-major increment
-            for d in (0..n_out).rev() {
-                idx[d] += 1;
-                if idx[d] < out_shape[d] { break; }
-                idx[d] = 0;
+        let nodes: Vec<NodeId> = self.graph.with(|g| {
+            let mut nodes = Vec::with_capacity(out_size);
+            let mut idx = vec![0usize; n_out];
+            for _ in 0..out_size {
+                let self_flat = bcast_src_flat(&idx, &self.shape, &self_strides);
+                let other_flat = bcast_src_flat(&idx, &other_shape, &other_strides);
+                let x = self_nodes[self_flat];
+                let y = other_nodes[other_flat];
+                let (a, b) = if swap { (y, x) } else { (x, y) };
+                nodes.push(emit(g, a, b));
+                // row-major increment
+                for d in (0..n_out).rev() {
+                    idx[d] += 1;
+                    if idx[d] < out_shape[d] { break; }
+                    idx[d] = 0;
+                }
             }
-        }
+            nodes
+        });
         Ok(Py::new(py, JitTracerArray::from_nodes_shape(&self.graph, nodes, out_shape))?.into_any().into())
     }
 }
@@ -410,10 +420,9 @@ impl JitTracerArray {
         if let Some(op) = cmp_op {
             return self.array_cmpop(py, op, other, swap);
         }
-        let g = self.graph.clone();
         let name = name.to_string();
-        self.array_elementwise(py, other, swap, move |a, b| {
-            super::binary_composite(&g, &name, a, b)
+        self.array_elementwise(py, other, swap, move |g, a, b| {
+            super::binary_composite_g(g, &name, a, b)
                 .expect("caller matched the composite name list")
         })
     }
@@ -510,82 +519,87 @@ pub(super) fn np_where_dispatch(
     if args.len() < 3 {
         return Ok(py.NotImplemented().into());
     }
-    enum Cond {
-        Nodes(Vec<NodeId>),
-        Consts(Vec<f64>),
+    /// One `np.where` operand with its N-D shape: traced nodes or eager
+    /// constants, both flat row-major. A scalar has shape `[]`.
+    enum Operand {
+        Nodes(Vec<usize>, Vec<NodeId>),
+        Consts(Vec<usize>, Vec<f64>),
     }
-    let cond_arg = args.get_item(0)?;
-    // `cond_scalar` distinguishes a genuinely scalar condition (tracer/float)
-    // from a 1-element vector one — numpy keeps the array-ness of the latter.
-    let (cond, cond_scalar) = if let Ok(t) = cond_arg.extract::<JitTracer>() {
-        (Cond::Nodes(vec![t.node_id]), true)
-    } else if let Ok(ta) = cond_arg.extract::<JitTracerArray>() {
-        (Cond::Nodes(ta.materialize()), false)
-    } else if let Ok(v) = cond_arg.extract::<f64>() {
-        (Cond::Consts(vec![v]), true)
-    } else if let Ok(vs) = cond_arg.extract::<Vec<f64>>() {
-        (Cond::Consts(vs), false)
-    } else {
-        return Ok(py.NotImplemented().into());
+    impl Operand {
+        fn shape(&self) -> &[usize] {
+            match self { Operand::Nodes(s, _) | Operand::Consts(s, _) => s }
+        }
+    }
+    let classify = |arg: &Bound<'_, PyAny>| -> Option<Operand> {
+        if let Ok(t) = arg.extract::<JitTracer>() {
+            Some(Operand::Nodes(vec![], vec![t.node_id]))
+        } else if let Ok(ta) = arg.extract::<JitTracerArray>() {
+            Some(Operand::Nodes(ta.shape.clone(), ta.materialize()))
+        } else if let Ok(v) = arg.extract::<f64>() {
+            Some(Operand::Consts(vec![], vec![v]))
+        } else if let Ok(vs) = arg.extract::<Vec<f64>>() {
+            Some(Operand::Consts(vec![vs.len()], vs))
+        } else {
+            None
+        }
     };
-    let Ok(then_arg) = args.get_item(1)?.extract::<ArrayBinArg>() else {
-        return Ok(py.NotImplemented().into());
-    };
-    let Ok(else_arg) = args.get_item(2)?.extract::<ArrayBinArg>() else {
+    let (Some(cond), Some(then_op), Some(else_op)) = (
+        classify(&args.get_item(0)?),
+        classify(&args.get_item(1)?),
+        classify(&args.get_item(2)?),
+    ) else {
         return Ok(py.NotImplemented().into());
     };
 
-    let arg_size = |a: &ArrayBinArg| -> Option<usize> {
-        match a {
-            ArrayBinArg::TracerArray(ta) => Some(ta.size),
-            ArrayBinArg::NdArray(vs) => Some(vs.len()),
-            ArrayBinArg::Tracer(_) | ArrayBinArg::Float(_) => None,
-        }
-    };
-    let cond_n = match &cond {
-        Cond::Nodes(v) => v.len(),
-        Cond::Consts(v) => v.len(),
-    };
-    let mut out = cond_n;
-    for s in [arg_size(&then_arg), arg_size(&else_arg)].into_iter().flatten() {
-        if s != 1 && out != 1 && s != out {
-            return Err(PyValueError::new_err(format!(
-                "np.where: shape mismatch {} vs {}", out, s)));
-        }
-        out = out.max(s);
-    }
-    let scalar_result = cond_scalar
-        && arg_size(&then_arg).is_none()
-        && arg_size(&else_arg).is_none();
+    // Full numpy broadcasting across all three operands; the result carries
+    // the broadcast shape (the former flat-only path returned 1-D and lost
+    // 2-D shapes).
+    let out_shape = broadcast_nd(&broadcast_nd(cond.shape(), then_op.shape())?, else_op.shape())?;
+    let out_size: usize = out_shape.iter().product::<usize>().max(1);
+    let scalar_result = out_shape.is_empty();
+    let n_out = out_shape.len();
 
-    let node_at = |arg: &ArrayBinArg, i: usize| -> NodeId {
-        match arg {
-            ArrayBinArg::Float(v) => graph.constant(*v),
-            ArrayBinArg::Tracer(t) => t.node_id,
-            ArrayBinArg::TracerArray(ta) => ta.get_node(if ta.size == 1 { 0 } else { i }),
-            ArrayBinArg::NdArray(vs) => graph.constant(vs[if vs.len() == 1 { 0 } else { i }]),
-        }
-    };
-    let mut nodes = Vec::with_capacity(out);
-    for i in 0..out {
-        let n = match &cond {
-            Cond::Consts(cs) => {
-                let c = cs[if cs.len() == 1 { 0 } else { i }];
-                if c != 0.0 { node_at(&then_arg, i) } else { node_at(&else_arg, i) }
+    let node_at = |op: &Operand, idx: &[usize]| -> NodeId {
+        match op {
+            Operand::Nodes(shape, nodes) => {
+                let flat = bcast_src_flat(idx, shape, &strides_row_major(shape));
+                nodes[flat]
             }
-            Cond::Nodes(cn) => {
-                let cid = cn[if cn.len() == 1 { 0 } else { i }];
-                let t = node_at(&then_arg, i);
-                let e = node_at(&else_arg, i);
-                graph.select(cid, t, e)
+            Operand::Consts(shape, vals) => {
+                let flat = bcast_src_flat(idx, shape, &strides_row_major(shape));
+                graph.constant(vals[flat])
+            }
+        }
+    };
+
+    let mut nodes = Vec::with_capacity(out_size);
+    let mut idx = vec![0usize; n_out];
+    for _ in 0..out_size {
+        let n = match &cond {
+            Operand::Consts(shape, vals) => {
+                // A constant condition picks its branch at trace time (numpy
+                // would resolve it eagerly too).
+                let flat = bcast_src_flat(&idx, shape, &strides_row_major(shape));
+                if vals[flat] != 0.0 { node_at(&then_op, &idx) } else { node_at(&else_op, &idx) }
+            }
+            Operand::Nodes(shape, cn) => {
+                let flat = bcast_src_flat(&idx, shape, &strides_row_major(shape));
+                let t = node_at(&then_op, &idx);
+                let e = node_at(&else_op, &idx);
+                graph.select(cn[flat], t, e)
             }
         };
         nodes.push(n);
+        for d in (0..n_out).rev() {
+            idx[d] += 1;
+            if idx[d] < out_shape[d] { break; }
+            idx[d] = 0;
+        }
     }
     if scalar_result {
         Ok(Py::new(py, JitTracer::new(graph, nodes[0]))?.into_any().into())
     } else {
-        Ok(Py::new(py, JitTracerArray::from_nodes(graph, nodes))?.into_any().into())
+        Ok(Py::new(py, JitTracerArray::from_nodes_shape(graph, nodes, out_shape))?.into_any().into())
     }
 }
 
@@ -630,6 +644,250 @@ fn broadcast_nd(a: &[usize], b: &[usize]) -> PyResult<Vec<usize>> {
     Ok(out)
 }
 
+/// N-D concatenation of (shape, flat row-major nodes) items along `axis`.
+/// numpy semantics: all items share rank and every non-`axis` extent; the
+/// output extent on `axis` is the sum. Shared by the `concatenate`,
+/// `hstack` (axis 1) and `vstack` (axis 0 after 2-D promotion) arms.
+fn concat_nd(
+    items: &[(Vec<usize>, Vec<NodeId>)],
+    axis: isize,
+) -> PyResult<(Vec<usize>, Vec<NodeId>)> {
+    let ref_shape = items[0].0.clone();
+    let rank = ref_shape.len();
+    if rank == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "np.concatenate: 0-D arrays cannot be concatenated"
+        ));
+    }
+    let ax = if axis < 0 { rank as isize + axis } else { axis };
+    if ax < 0 || ax >= rank as isize {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            format!("np.concatenate: axis {} out of bounds for rank {}", axis, rank)
+        ));
+    }
+    let ax = ax as usize;
+    let mut out_shape = ref_shape.clone();
+    out_shape[ax] = 0;
+    for (s, _) in items {
+        if s.len() != rank {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("np.concatenate: rank mismatch {} vs {}", rank, s.len())
+            ));
+        }
+        for d in 0..rank {
+            if d == ax { out_shape[ax] += s[d]; }
+            else if s[d] != ref_shape[d] {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    format!("np.concatenate: shape mismatch on axis {} ({} vs {})", d, ref_shape[d], s[d])
+                ));
+            }
+        }
+    }
+    let out_size: usize = out_shape.iter().product();
+    let out_strides = strides_row_major(&out_shape);
+    let mut nodes = vec![0u32; out_size];
+    let mut axis_offset = 0usize;
+    for (src_shape, src_nodes) in items {
+        let src_strides = strides_row_major(src_shape);
+        let src_size: usize = src_shape.iter().product();
+        let mut src_idx = vec![0usize; rank];
+        for _ in 0..src_size {
+            let mut src_flat = 0usize;
+            let mut dst_flat = 0usize;
+            for d in 0..rank {
+                src_flat += src_idx[d] * src_strides[d];
+                let out_pos = if d == ax { src_idx[d] + axis_offset } else { src_idx[d] };
+                dst_flat += out_pos * out_strides[d];
+            }
+            nodes[dst_flat] = src_nodes[src_flat];
+            for d in (0..rank).rev() {
+                src_idx[d] += 1;
+                if src_idx[d] < src_shape[d] { break; }
+                src_idx[d] = 0;
+            }
+        }
+        axis_offset += src_shape[ax];
+    }
+    Ok((out_shape, nodes))
+}
+
+/// Invert a dense constant matrix by Gauss--Jordan with partial pivoting.
+/// `None` for a singular (or non-square) matrix. Trace-time only: the cost is
+/// O(n^3) floats once, so `np.linalg.solve(A_const, b)` can lower to n fused
+/// dot products over `b`'s nodes.
+fn invert_matrix(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
+    let n = a.len();
+    if n == 0 || a.iter().any(|r| r.len() != n) { return None; }
+    // Augmented [A | I], eliminated in place.
+    let mut m: Vec<Vec<f64>> = (0..n).map(|i| {
+        let mut row = a[i].clone();
+        row.extend((0..n).map(|j| if i == j { 1.0 } else { 0.0 }));
+        row
+    }).collect();
+    for col in 0..n {
+        // Partial pivot: largest |entry| at or below the diagonal.
+        let pivot = (col..n).max_by(|&i, &j| {
+            m[i][col].abs().partial_cmp(&m[j][col].abs()).unwrap()
+        })?;
+        if m[pivot][col].abs() < 1e-300 { return None; } // singular
+        m.swap(col, pivot);
+        let p = m[col][col];
+        for v in m[col].iter_mut() { *v /= p; }
+        for row in 0..n {
+            if row == col { continue; }
+            let f = m[row][col];
+            if f == 0.0 { continue; }
+            for k in 0..2 * n {
+                m[row][k] -= f * m[col][k];
+            }
+        }
+    }
+    Some(m.into_iter().map(|row| row[n..].to_vec()).collect())
+}
+
+/// Lower `np.var`/`np.std` (population variance with numpy's ddof correction).
+/// Shared by the `__array_function__` arm and the `x.var()`/`x.std()` method
+/// forms. The squared-diff sum is ONE fused `Dot(d, d)` node.
+fn var_std(
+    py: Python<'_>, ta: &JitTracerArray, ddof: usize, is_std: bool,
+) -> PyResult<Py<PyAny>> {
+    if ddof >= ta.size {
+        return Err(PyValueError::new_err(format!(
+            "var/std: ddof {} >= size {}", ddof, ta.size)));
+    }
+    let n_node = ta.graph.constant(ta.size as f64);
+    let denom = ta.graph.constant((ta.size - ddof) as f64);
+    let sum = reduce_array(ta, BinOp::Add, 0.0).node_id;
+    let mean = ta.graph.binary(BinOp::Div, sum, n_node);
+    let ids = ta.materialize();
+    let diffs: Vec<NodeId> = ta.graph.with(|g| {
+        ids.iter().map(|&x| g.binary(BinOp::Sub, x, mean)).collect()
+    });
+    let ssd = node_dot(&ta.graph, diffs.clone(), diffs);
+    let var = ta.graph.binary(BinOp::Div, ssd, denom);
+    let result = if is_std { ta.graph.unary(UnaryOp::Sqrt, var) } else { var };
+    Ok(Py::new(py, JitTracer::new(&ta.graph, result))?.into_any().into())
+}
+
+/// Shared `np.searchsorted(const_grid, v, side=...)` lowering for both tracer
+/// types: the insertion index is a count, #\{grid[i] < v\} (side='left') or
+/// #\{grid[i] <= v\} ('right'), lowered as a fused Reduce over per-breakpoint
+/// Cmp nodes. The grid must be constant (like np.interp).
+pub(super) fn np_searchsorted_dispatch(
+    py: Python<'_>,
+    graph: &SharedGraph,
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<Py<PyAny>> {
+    if args.len() < 2 || !kwargs_subset(kwargs, &["side"]) {
+        return Ok(py.NotImplemented().into());
+    }
+    let Ok(grid) = args.get_item(0)?.extract::<Vec<f64>>() else {
+        return Ok(py.NotImplemented().into());
+    };
+    let mut right = false;
+    if args.len() >= 3 {
+        match args.get_item(2)?.extract::<String>() {
+            Ok(s) if s == "left" => {}
+            Ok(s) if s == "right" => right = true,
+            _ => return Ok(py.NotImplemented().into()),
+        }
+    }
+    if let Some(k) = kwargs {
+        if let Ok(Some(v)) = k.get_item("side") {
+            match v.extract::<String>() {
+                Ok(s) if s == "left" => {}
+                Ok(s) if s == "right" => right = true,
+                _ => return Ok(py.NotImplemented().into()),
+            }
+        }
+    }
+    let emit_one = |g: &mut Graph, v: NodeId| -> NodeId {
+        let cmps: Vec<NodeId> = grid.iter().map(|&gp| {
+            let c = g.constant(gp);
+            if right { g.cmp(CmpOp::Le, c, v) } else { g.cmp(CmpOp::Lt, c, v) }
+        }).collect();
+        match cmps.len() {
+            0 => g.constant(0.0),
+            1 => cmps[0],
+            _ => g.add(Node::Reduce(ReduceOp::Sum, cmps)),
+        }
+    };
+    let v_arg = args.get_item(1)?;
+    if let Ok(t) = v_arg.extract::<JitTracer>() {
+        let node = graph.with(|g| emit_one(g, t.node_id));
+        return Ok(Py::new(py, JitTracer::new(graph, node))?.into_any().into());
+    }
+    if let Ok(ta) = v_arg.extract::<JitTracerArray>() {
+        let ids = ta.materialize();
+        let nodes: Vec<NodeId> = graph.with(|g| {
+            ids.iter().map(|&v| emit_one(g, v)).collect()
+        });
+        return Ok(Py::new(py, JitTracerArray::from_nodes_shape(
+            graph, nodes, ta.shape.clone()))?.into_any().into());
+    }
+    Ok(py.NotImplemented().into())
+}
+
+/// Running accumulation (`cumsum`/`cumprod`) over a 1-D tracer array. Shared
+/// by the `np.*` function arms and the `x.cumsum()`/`x.cumprod()` methods.
+fn cumulative(ta: &JitTracerArray, op: BinOp) -> Vec<NodeId> {
+    let ids = ta.materialize();
+    if ids.is_empty() { return ids; }
+    let mut acc = ids[0];
+    let mut nodes = Vec::with_capacity(ids.len());
+    nodes.push(acc);
+    ta.graph.with(|g| {
+        for &x in &ids[1..] {
+            acc = g.binary(op, acc, x);
+            nodes.push(acc);
+        }
+    });
+    nodes
+}
+
+/// n-th first difference over a 1-D tracer array (numpy `np.diff` core).
+/// `order >= len` yields an empty vec, exactly like numpy.
+fn diff_nodes(ta: &JitTracerArray, order: usize) -> Vec<NodeId> {
+    let mut nodes = ta.materialize();
+    ta.graph.with(|g| {
+        for _ in 0..order {
+            if nodes.is_empty() { break; }
+            nodes = (0..nodes.len().saturating_sub(1))
+                .map(|i| g.binary(BinOp::Sub, nodes[i + 1], nodes[i]))
+                .collect();
+        }
+    });
+    nodes
+}
+
+/// Lower `np.argmax`/`np.argmin` as a running subgradient-style fold: carry
+/// `(best_value, best_index)` through per-element `Select` pairs. Strict
+/// comparison keeps numpy's first-occurrence-wins tie rule. The index is
+/// returned as an f64 tracer (the graph is scalar f64 throughout).
+fn arg_reduce(py: Python<'_>, ta: &JitTracerArray, is_max: bool) -> PyResult<Py<PyAny>> {
+    if ta.size == 0 {
+        return Err(PyValueError::new_err("argmax/argmin of an empty array"));
+    }
+    let ids = ta.materialize();
+    let node = ta.graph.with(|g| {
+        let mut best_val = ids[0];
+        let mut best_idx = g.constant(0.0);
+        for (i, &x) in ids.iter().enumerate().skip(1) {
+            let better = if is_max {
+                g.cmp(CmpOp::Gt, x, best_val)
+            } else {
+                g.cmp(CmpOp::Lt, x, best_val)
+            };
+            let idx_c = g.constant(i as f64);
+            best_val = g.select(better, x, best_val);
+            best_idx = g.select(better, idx_c, best_idx);
+        }
+        best_idx
+    });
+    Ok(Py::new(py, JitTracer::new(&ta.graph, node))?.into_any().into())
+}
+
 /// The variadic reduction matching an accumulation `BinOp`, if one exists.
 /// Only the four ops that the numpy reduction paths use map across.
 fn reduce_op_for(op: BinOp) -> Option<ReduceOp> {
@@ -668,7 +926,7 @@ fn fold_nodes(graph: &SharedGraph, op: BinOp, identity: f64, nodes: Vec<NodeId>)
 
 /// Fold an array into a scalar tracer with `op`. Empty array returns `identity`.
 fn reduce_array(ta: &JitTracerArray, op: BinOp, identity: f64) -> JitTracer {
-    let nodes: Vec<NodeId> = (0..ta.size).map(|i| ta.get_node(i)).collect();
+    let nodes = ta.materialize();
     JitTracer::new(&ta.graph, fold_nodes(&ta.graph, op, identity, nodes))
 }
 
@@ -713,11 +971,14 @@ fn symbolic_matmul(
 ) -> PyResult<Py<PyAny>> {
     let g = &a.graph;
     let dim_err = |what: &str| pyo3::exceptions::PyValueError::new_err(what.to_string());
-    let row = |t: &JitTracerArray, base: usize, len: usize| -> Vec<NodeId> {
-        (0..len).map(|k| t.get_node(base + k)).collect()
+    // Materialize both operands once; rows/cols are slices of the flat vecs.
+    let an = a.materialize();
+    let bn = b.materialize();
+    let row = |v: &[NodeId], base: usize, len: usize| -> Vec<NodeId> {
+        v[base..base + len].to_vec()
     };
-    let col = |t: &JitTracerArray, j: usize, rows: usize, cols: usize| -> Vec<NodeId> {
-        (0..rows).map(|i| t.get_node(i * cols + j)).collect()
+    let col = |v: &[NodeId], j: usize, rows: usize, cols: usize| -> Vec<NodeId> {
+        (0..rows).map(|i| v[i * cols + j]).collect()
     };
     match (a.shape.len(), b.shape.len()) {
         // 1-D · 1-D → scalar dot.
@@ -726,7 +987,7 @@ fn symbolic_matmul(
                 return Err(dim_err(&format!(
                     "matmul size mismatch: ({},) @ ({},)", a.size, b.size)));
             }
-            let d = node_dot(g, row(a, 0, a.size), row(b, 0, b.size));
+            let d = node_dot(g, row(&an, 0, a.size), row(&bn, 0, b.size));
             Ok(Py::new(py, JitTracer::new(g, d))?.into_any().into())
         }
         // (m×k) · (k,) → (m,)
@@ -736,9 +997,9 @@ fn symbolic_matmul(
                 return Err(dim_err(&format!(
                     "matmul shape mismatch: ({m},{k}) @ ({},)", b.size)));
             }
-            let bv = row(b, 0, k);
+            let bv = row(&bn, 0, k);
             let out: Vec<NodeId> = (0..m)
-                .map(|i| node_dot(g, row(a, i * k, k), bv.clone()))
+                .map(|i| node_dot(g, row(&an, i * k, k), bv.clone()))
                 .collect();
             Ok(Py::new(py, JitTracerArray::from_nodes(g, out))?.into_any().into())
         }
@@ -749,9 +1010,9 @@ fn symbolic_matmul(
                 return Err(dim_err(&format!(
                     "matmul shape mismatch: ({},) @ ({k},{n})", a.size)));
             }
-            let av = row(a, 0, k);
+            let av = row(&an, 0, k);
             let out: Vec<NodeId> = (0..n)
-                .map(|j| node_dot(g, av.clone(), col(b, j, k, n)))
+                .map(|j| node_dot(g, av.clone(), col(&bn, j, k, n)))
                 .collect();
             Ok(Py::new(py, JitTracerArray::from_nodes(g, out))?.into_any().into())
         }
@@ -765,9 +1026,9 @@ fn symbolic_matmul(
             }
             let mut out = Vec::with_capacity(m * n);
             for i in 0..m {
-                let arow = row(a, i * k, k);
+                let arow = row(&an, i * k, k);
                 for j in 0..n {
-                    out.push(node_dot(g, arow.clone(), col(b, j, k, n)));
+                    out.push(node_dot(g, arow.clone(), col(&bn, j, k, n)));
                 }
             }
             Ok(Py::new(py, JitTracerArray::from_nodes_shape(g, out, vec![m, n]))?
@@ -862,6 +1123,22 @@ fn extract_keepdims(kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<bool> {
     Ok(false)
 }
 
+/// True when every kwarg key is in `allowed`. The kwargs POLICY for every
+/// `__array_function__` arm: a numpy parameter the arm does not model
+/// (`out=`, `where=`, `initial=`, `dtype=`, ...) must NOT be silently
+/// ignored — ignoring one produces a value that diverges from eager numpy
+/// with no error (a silent miscompile). On an unknown kwarg the arm returns
+/// `NotImplemented`; numpy raises `TypeError`, the trace fails, and the block
+/// falls back to the opaque Python callback — fail-open.
+fn kwargs_subset(kwargs: Option<&Bound<'_, PyDict>>, allowed: &[&str]) -> bool {
+    match kwargs {
+        None => true,
+        Some(k) => k.iter().all(|(key, _)| {
+            key.extract::<String>().is_ok_and(|s| allowed.contains(&s.as_str()))
+        }),
+    }
+}
+
 #[pymethods]
 impl JitTracerArray {
     /// Higher priority than ndarray (0.0) so A @ tracer calls our __rmatmul__
@@ -891,10 +1168,11 @@ impl JitTracerArray {
         {
             if args.len() != 1 { return Ok(py.NotImplemented().into()); }
             if let Ok(ta) = args.get_item(0)?.extract::<JitTracerArray>() {
-                let nodes: Vec<NodeId> = (0..ta.size)
-                    .map(|i| super::unary_composite(&ta.graph, &name, ta.get_node(i))
-                        .expect("name matched the composite list"))
-                    .collect();
+                let ids = ta.materialize();
+                let nodes: Vec<NodeId> = ta.graph.with(|g| {
+                    ids.iter().map(|&x| super::unary_composite_g(g, &name, x)
+                        .expect("name matched the composite list")).collect()
+                });
                 return Ok(Py::new(py, JitTracerArray::from_nodes_shape(
                     &ta.graph, nodes, ta.shape.clone()))?.into_any().into());
             }
@@ -1228,6 +1506,46 @@ impl JitTracerArray {
         self.mean_dispatch(py, axis, keepdims)
     }
 
+    /// numpy-style `x.var(ddof=0)` — same lowering as `np.var(x, ddof=...)`.
+    #[pyo3(signature = (ddof=0))]
+    fn var(&self, py: Python<'_>, ddof: usize) -> PyResult<Py<PyAny>> {
+        var_std(py, self, ddof, false)
+    }
+
+    /// numpy-style `x.std(ddof=0)` — same lowering as `np.std(x, ddof=...)`.
+    #[pyo3(signature = (ddof=0))]
+    fn std(&self, py: Python<'_>, ddof: usize) -> PyResult<Py<PyAny>> {
+        var_std(py, self, ddof, true)
+    }
+
+    /// numpy-style `x.cumsum()` (1-D only, like the `np.cumsum` arm).
+    fn cumsum(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if self.shape.len() > 1 || self.size == 0 {
+            return Err(PyValueError::new_err("cumsum: 1-D tracer arrays only"));
+        }
+        let nodes = cumulative(self, BinOp::Add);
+        Ok(Py::new(py, JitTracerArray::from_nodes(&self.graph, nodes))?.into_any().into())
+    }
+
+    /// numpy-style `x.cumprod()` (1-D only, like the `np.cumprod` arm).
+    fn cumprod(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if self.shape.len() > 1 || self.size == 0 {
+            return Err(PyValueError::new_err("cumprod: 1-D tracer arrays only"));
+        }
+        let nodes = cumulative(self, BinOp::Mul);
+        Ok(Py::new(py, JitTracerArray::from_nodes(&self.graph, nodes))?.into_any().into())
+    }
+
+    /// numpy-style `x.argmax()` — running (best, index) Select fold.
+    fn argmax(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        arg_reduce(py, self, true)
+    }
+
+    /// numpy-style `x.argmin()` — running (best, index) Select fold.
+    fn argmin(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        arg_reduce(py, self, false)
+    }
+
     /// `x.dot(other)` — numpy `.dot`: vector dot for 1-D operands, matrix
     /// product for 2-D, scale for scalars.
     fn dot(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
@@ -1286,11 +1604,13 @@ impl JitTracerArray {
         };
         let lo = resolve(a_min, f64::NEG_INFINITY);
         let hi = resolve(a_max, f64::INFINITY);
-        let nodes: Vec<NodeId> = (0..self.size).map(|i| {
-            let v = self.get_node(i);
-            let m = self.graph.binary(BinOp::Max, v, lo);
-            self.graph.binary(BinOp::Min, m, hi)
-        }).collect();
+        let ids = self.materialize();
+        let nodes: Vec<NodeId> = self.graph.with(|g| {
+            ids.iter().map(|&v| {
+                let m = g.binary(BinOp::Max, v, lo);
+                g.binary(BinOp::Min, m, hi)
+            }).collect()
+        });
         Ok(Py::new(py, JitTracerArray::from_nodes_shape(
             &self.graph, nodes, self.shape.clone()))?.into_any().into())
     }
@@ -1348,12 +1668,10 @@ impl JitTracerArray {
     }
     // Python `%` is floored modulo — see `super::floored_mod`.
     fn __mod__(&self, py: Python<'_>, other: ArrayBinArg) -> PyResult<Py<PyAny>> {
-        let g = self.graph.clone();
-        self.array_elementwise(py, other, false, move |a, b| super::floored_mod(&g, a, b))
+        self.array_elementwise(py, other, false, super::floored_mod_g)
     }
     fn __rmod__(&self, py: Python<'_>, other: ArrayBinArg) -> PyResult<Py<PyAny>> {
-        let g = self.graph.clone();
-        self.array_elementwise(py, other, true, move |a, b| super::floored_mod(&g, a, b))
+        self.array_elementwise(py, other, true, super::floored_mod_g)
     }
 
     // ---- Element-wise comparisons (return 0.0/1.0 arrays) ----
@@ -1492,25 +1810,44 @@ impl JitTracerArray {
             .and_then(|m| m.extract())
             .unwrap_or_default();
         match name.as_str() {
-            // np.diff — 1-D first difference `out[i] = x[i+1] - x[i]` (length n-1),
-            // composed from elementwise subtraction (traces + AD + codegen).
+            // np.diff — 1-D n-th difference, composed from elementwise
+            // subtraction (traces + AD + codegen). Supports integer `n`
+            // (positional or kwarg); `axis`/`prepend`/`append` are not
+            // modelled → NotImplemented (fail-open, not a silent first-diff).
             "diff" => {
                 if self.shape.len() > 1 || self.size == 0 { return Ok(py.NotImplemented().into()); }
-                let nodes: Vec<NodeId> = (0..self.size - 1)
-                    .map(|i| self.graph.binary(BinOp::Sub, self.get_node(i + 1), self.get_node(i)))
-                    .collect();
+                if !kwargs_subset(kwargs, &["n"]) || args.len() > 2 {
+                    return Ok(py.NotImplemented().into());
+                }
+                let mut order: usize = 1;
+                if args.len() == 2 {
+                    match args.get_item(1)?.extract::<usize>() {
+                        Ok(n) => order = n,
+                        Err(_) => return Ok(py.NotImplemented().into()),
+                    }
+                }
+                if let Some(k) = kwargs {
+                    if let Ok(Some(v)) = k.get_item("n") {
+                        match v.extract::<usize>() {
+                            Ok(n) => order = n,
+                            Err(_) => return Ok(py.NotImplemented().into()),
+                        }
+                    }
+                }
+                // order >= size yields an empty array, exactly like numpy
+                // (the width-1 probe relies on this: np.sum(np.diff(u)) must
+                // trace to the 0.0 constant there).
+                let nodes = diff_nodes(self, order);
                 Ok(Py::new(py, JitTracerArray::from_nodes(&self.graph, nodes))?.into_any().into())
             }
             // np.cumsum — 1-D prefix sum via an O(n) running-add chain.
+            // Positional/keyword axis/dtype/out are not modelled → NotImplemented.
             "cumsum" => {
                 if self.shape.len() > 1 || self.size == 0 { return Ok(py.NotImplemented().into()); }
-                let mut acc = self.get_node(0);
-                let mut nodes = Vec::with_capacity(self.size);
-                nodes.push(acc);
-                for i in 1..self.size {
-                    acc = self.graph.binary(BinOp::Add, acc, self.get_node(i));
-                    nodes.push(acc);
+                if args.len() > 1 || !kwargs_subset(kwargs, &[]) {
+                    return Ok(py.NotImplemented().into());
                 }
+                let nodes = cumulative(self, BinOp::Add);
                 Ok(Py::new(py, JitTracerArray::from_nodes(&self.graph, nodes))?.into_any().into())
             }
             "matmul" => {
@@ -1567,9 +1904,15 @@ impl JitTracerArray {
                     let nodes: Vec<NodeId> = vals.iter().map(|&v| self.graph.constant(v)).collect();
                     Some(JitTracerArray::from_nodes(&self.graph, nodes))
                 });
-                // Both → scalar dot product (one fused Dot node).
+                // Both → scalar dot product (one fused Dot node). Mismatched
+                // sizes RAISE, exactly like eager numpy — silently contracting
+                // over min(len) would turn a user shape bug into wrong values.
                 if let (Some(a), Some(b)) = (&ta0, &ta1) {
-                    let n = a.size.min(b.size);
+                    if a.size != b.size {
+                        return Err(PyValueError::new_err(format!(
+                            "np.dot: shapes ({},) and ({},) not aligned", a.size, b.size)));
+                    }
+                    let n = a.size;
                     let a_nodes: Vec<NodeId> = (0..n).map(|i| a.get_node(i)).collect();
                     let b_nodes: Vec<NodeId> = (0..n).map(|i| b.get_node(i)).collect();
                     let result = JitTracer::new(&a.graph, node_dot(&a.graph, a_nodes, b_nodes));
@@ -1601,6 +1944,12 @@ impl JitTracerArray {
             }
             "sum" | "prod" | "amin" | "min" | "amax" | "max" => {
                 if args.is_empty() { return Ok(py.NotImplemented().into()); }
+                // kwargs POLICY: silently ignoring `where=` / `initial=` /
+                // `dtype=` / `out=` diverges from eager numpy. Positional
+                // args beyond (x, axis) (e.g. a positional dtype) likewise.
+                if !kwargs_subset(kwargs, &["axis", "keepdims"]) || args.len() > 2 {
+                    return Ok(py.NotImplemented().into());
+                }
                 if let Ok(ta) = args.get_item(0)?.extract::<JitTracerArray>() {
                     let (op, identity) = match name.as_str() {
                         "sum"           => (BinOp::Add, 0.0),
@@ -1618,6 +1967,9 @@ impl JitTracerArray {
             }
             "mean" => {
                 if args.is_empty() { return Ok(py.NotImplemented().into()); }
+                if !kwargs_subset(kwargs, &["axis", "keepdims"]) || args.len() > 2 {
+                    return Ok(py.NotImplemented().into());
+                }
                 if let Ok(ta) = args.get_item(0)?.extract::<JitTracerArray>() {
                     let axis = extract_axis(args, kwargs)?;
                     let keepdims = extract_keepdims(kwargs)?;
@@ -1626,29 +1978,165 @@ impl JitTracerArray {
                 Ok(py.NotImplemented().into())
             }
             "var" | "std" => {
-                // Population variance: E[(x - E[x])^2]. std = sqrt(var).
-                // NumPy default is ddof=0 (population); we match that here.
+                // Variance E[(x - E[x])^2] with numpy's ddof correction:
+                // divide the squared-diff sum by (n - ddof). std = sqrt(var).
                 // The squared-diff sum is ONE fused `Dot(d, d)` node — the
                 // structured form the tape evaluates with the 4-lane kernel —
-                // instead of an O(N) Pow/Add chain.
+                // instead of an O(N) Pow/Add chain. axis/where/out are not
+                // modelled → NotImplemented (fail-open).
                 if args.is_empty() { return Ok(py.NotImplemented().into()); }
+                if !kwargs_subset(kwargs, &["ddof"]) || args.len() > 1 {
+                    return Ok(py.NotImplemented().into());
+                }
+                let mut ddof: usize = 0;
+                if let Some(k) = kwargs {
+                    if let Ok(Some(v)) = k.get_item("ddof") {
+                        match v.extract::<usize>() {
+                            Ok(d) => ddof = d,
+                            Err(_) => return Ok(py.NotImplemented().into()),
+                        }
+                    }
+                }
                 if let Ok(ta) = args.get_item(0)?.extract::<JitTracerArray>() {
-                    let n = ta.size as f64;
-                    let n_node = ta.graph.constant(n);
-                    let sum = reduce_array(&ta, BinOp::Add, 0.0).node_id;
-                    let mean = ta.graph.binary(BinOp::Div, sum, n_node);
-                    let diffs: Vec<NodeId> = (0..ta.size)
-                        .map(|i| ta.graph.binary(BinOp::Sub, ta.get_node(i), mean))
-                        .collect();
-                    let ssd = node_dot(&ta.graph, diffs.clone(), diffs);
-                    let var = ta.graph.binary(BinOp::Div, ssd, n_node);
-                    let result = if name == "std" {
-                        ta.graph.unary(UnaryOp::Sqrt, var)
-                    } else { var };
-                    return Ok(Py::new(py, JitTracer::new(&ta.graph, result))?.into_any().into());
+                    if ddof >= ta.size { return Ok(py.NotImplemented().into()); }
+                    return var_std(py, &ta, ddof, name == "std");
                 }
                 Ok(py.NotImplemented().into())
             }
+            // np.argmax / np.argmin — running (best, index) fold over Selects.
+            // axis/out are not modelled → NotImplemented (fail-open).
+            "argmax" | "argmin" => {
+                if args.len() != 1 || !kwargs_subset(kwargs, &[]) {
+                    return Ok(py.NotImplemented().into());
+                }
+                if let Ok(ta) = args.get_item(0)?.extract::<JitTracerArray>() {
+                    return arg_reduce(py, &ta, name == "argmax");
+                }
+                Ok(py.NotImplemented().into())
+            }
+            // np.linalg.solve(A, b) with a CONSTANT coefficient matrix: invert
+            // A at trace time and emit x = A⁻¹ b as n fused dot products over
+            // b's nodes. A symbolic A stays structural (no symbolic inverse).
+            "solve" if module.contains("linalg") => {
+                if args.len() != 2 || !kwargs_subset(kwargs, &[]) {
+                    return Ok(py.NotImplemented().into());
+                }
+                let Ok(a_const) = args.get_item(0)?.extract::<Vec<Vec<f64>>>() else {
+                    return Ok(py.NotImplemented().into());
+                };
+                let Ok(b) = args.get_item(1)?.extract::<JitTracerArray>() else {
+                    return Ok(py.NotImplemented().into());
+                };
+                if a_const.len() != b.size {
+                    return Err(PyValueError::new_err(format!(
+                        "np.linalg.solve: matrix rows ({}) != rhs size ({})",
+                        a_const.len(), b.size)));
+                }
+                let Some(inv) = invert_matrix(&a_const) else {
+                    return Err(PyValueError::new_err(
+                        "np.linalg.solve: singular (or non-square) matrix"));
+                };
+                let bn = b.materialize();
+                let out: Vec<NodeId> = inv.iter().map(|row| {
+                    let terms: Vec<(f64, NodeId)> = row.iter().zip(&bn)
+                        .filter(|(c, _)| **c != 0.0)
+                        .map(|(&c, &x)| (c, x))
+                        .collect();
+                    coeff_dot(&b.graph, terms)
+                }).collect();
+                Ok(Py::new(py, JitTracerArray::from_nodes(&b.graph, out))?.into_any().into())
+            }
+            // np.select(condlist, choicelist, default=0) — right fold of
+            // per-element Selects: the first true condition wins, exactly
+            // like numpy. Sizes must match or be scalar.
+            "select" => {
+                if args.len() < 2 || args.len() > 3 || !kwargs_subset(kwargs, &["default"]) {
+                    return Ok(py.NotImplemented().into());
+                }
+                let to_operands = |seq: &Bound<'_, PyAny>| -> Option<Vec<ArrayBinArg>> {
+                    let mut out = Vec::new();
+                    for item in seq.try_iter().ok()? {
+                        out.push(item.ok()?.extract::<ArrayBinArg>().ok()?);
+                    }
+                    Some(out)
+                };
+                let (Some(conds), Some(choices)) = (
+                    to_operands(&args.get_item(0)?),
+                    to_operands(&args.get_item(1)?),
+                ) else {
+                    return Ok(py.NotImplemented().into());
+                };
+                if conds.len() != choices.len() || conds.is_empty() {
+                    return Ok(py.NotImplemented().into());
+                }
+                let default: ArrayBinArg = if args.len() == 3 {
+                    args.get_item(2)?.extract()?
+                } else if let Some(Ok(Some(d))) = kwargs.map(|k| k.get_item("default")) {
+                    d.extract()?
+                } else {
+                    ArrayBinArg::Float(0.0)
+                };
+                // Common output size: max over all vector operands.
+                let size_of = |a: &ArrayBinArg| -> Option<usize> {
+                    match a {
+                        ArrayBinArg::TracerArray(ta) => Some(ta.size),
+                        ArrayBinArg::NdArray(vs) => Some(vs.len()),
+                        _ => None,
+                    }
+                };
+                let mut out_n = 1usize;
+                for a in conds.iter().chain(choices.iter()).chain(std::iter::once(&default)) {
+                    if let Some(s) = size_of(a) {
+                        if s != 1 && out_n != 1 && s != out_n {
+                            return Err(PyValueError::new_err(format!(
+                                "np.select: size mismatch {} vs {}", out_n, s)));
+                        }
+                        out_n = out_n.max(s);
+                    }
+                }
+                let node_at = |g: &mut Graph, a: &ArrayBinArg, nodes: &[NodeId], i: usize| -> NodeId {
+                    match a {
+                        ArrayBinArg::Float(v) => g.constant(*v),
+                        ArrayBinArg::Tracer(t) => t.node_id,
+                        ArrayBinArg::TracerArray(_) | ArrayBinArg::NdArray(_) => {
+                            nodes[if nodes.len() == 1 { 0 } else { i }]
+                        }
+                    }
+                };
+                // Pre-materialize vector operands (outside the emit borrow).
+                let mat = |a: &ArrayBinArg| -> Vec<NodeId> {
+                    match a {
+                        ArrayBinArg::TracerArray(ta) => ta.materialize(),
+                        ArrayBinArg::NdArray(vs) => self.graph.with(|g| {
+                            vs.iter().map(|&v| g.constant(v)).collect()
+                        }),
+                        _ => Vec::new(),
+                    }
+                };
+                let cond_nodes: Vec<Vec<NodeId>> = conds.iter().map(&mat).collect();
+                let choice_nodes: Vec<Vec<NodeId>> = choices.iter().map(&mat).collect();
+                let default_nodes = mat(&default);
+                let out: Vec<NodeId> = self.graph.with(|g| {
+                    (0..out_n).map(|i| {
+                        // Right fold: later conditions are the fallback.
+                        let mut acc = node_at(g, &default, &default_nodes, i);
+                        for k in (0..conds.len()).rev() {
+                            let c = node_at(g, &conds[k], &cond_nodes[k], i);
+                            let v = node_at(g, &choices[k], &choice_nodes[k], i);
+                            acc = g.select(c, v, acc);
+                        }
+                        acc
+                    }).collect()
+                });
+                if out_n == 1 && size_of(&default).is_none()
+                    && conds.iter().chain(choices.iter()).all(|a| size_of(a).is_none())
+                {
+                    return Ok(Py::new(py, JitTracer::new(&self.graph, out[0]))?.into_any().into());
+                }
+                Ok(Py::new(py, JitTracerArray::from_nodes(&self.graph, out))?.into_any().into())
+            }
+            // np.searchsorted — shared with the scalar tracer's handler.
+            "searchsorted" => np_searchsorted_dispatch(py, &self.graph, args, kwargs),
             "array" => {
                 if args.len() == 1 {
                     let arg0 = args.get_item(0)?;
@@ -1679,13 +2167,16 @@ impl JitTracerArray {
                     };
                     let lo_id = resolve(args.get_item(1)?.extract()?, f64::NEG_INFINITY);
                     let hi_id = resolve(args.get_item(2)?.extract()?, f64::INFINITY);
-                    let mut nodes = Vec::with_capacity(ta.size);
-                    for i in 0..ta.size {
-                        let v = ta.get_node(i);
-                        let clamped_lo = ta.graph.binary(BinOp::Max, v, lo_id);
-                        nodes.push(ta.graph.binary(BinOp::Min, clamped_lo, hi_id));
-                    }
-                    return Ok(Py::new(py, JitTracerArray::from_nodes(&ta.graph, nodes))?.into_any().into());
+                    let ids = ta.materialize();
+                    let nodes: Vec<NodeId> = ta.graph.with(|g| {
+                        ids.iter().map(|&v| {
+                            let clamped_lo = g.binary(BinOp::Max, v, lo_id);
+                            g.binary(BinOp::Min, clamped_lo, hi_id)
+                        }).collect()
+                    });
+                    // Keep the input's N-D shape (the method form does too).
+                    return Ok(Py::new(py, JitTracerArray::from_nodes_shape(
+                        &ta.graph, nodes, ta.shape.clone()))?.into_any().into());
                 }
                 Ok(py.NotImplemented().into())
             }
@@ -1802,7 +2293,12 @@ impl JitTracerArray {
                 });
                 if let (Some(a), Some(b)) = (&a, &b) {
                     // One fused Dot node (4-lane tape kernel), not an Add chain.
-                    let n = a.size.min(b.size);
+                    // Mismatched sizes raise, matching eager numpy.
+                    if a.size != b.size {
+                        return Err(PyValueError::new_err(format!(
+                            "np.{}: shapes ({},) and ({},) not aligned", name, a.size, b.size)));
+                    }
+                    let n = a.size;
                     let an: Vec<NodeId> = (0..n).map(|i| a.get_node(i)).collect();
                     let bn: Vec<NodeId> = (0..n).map(|i| b.get_node(i)).collect();
                     let result = JitTracer::new(&a.graph, node_dot(&a.graph, an, bn));
@@ -1852,11 +2348,11 @@ impl JitTracerArray {
                     return Ok(Py::new(py, JitTracerArray::from_nodes(&self.graph, vec![]))?.into_any().into());
                 }
 
-                // Legacy flat-1D path for hstack/vstack/array/asarray — keep shape
-                // for asarray on a single array arg; otherwise flatten.
-                let is_legacy = matches!(name.as_str(), "hstack" | "vstack" | "array" | "asarray");
-                if is_legacy {
-                    if matches!(name.as_str(), "array" | "asarray") && items.len() == 1 {
+                // Legacy flat-1D path for array/asarray — keep shape for
+                // asarray on a single array arg; otherwise flatten (the
+                // scalar-assembly idiom `np.array([expr1, expr2])`).
+                if matches!(name.as_str(), "array" | "asarray") {
+                    if items.len() == 1 {
                         let (shape, nodes) = items.pop().unwrap();
                         let shape = if shape.is_empty() { vec![1] } else { shape };
                         return Ok(Py::new(py, JitTracerArray::from_nodes_shape(&self.graph, nodes, shape))?.into_any().into());
@@ -1866,16 +2362,38 @@ impl JitTracerArray {
                     return Ok(Py::new(py, JitTracerArray::from_nodes(&self.graph, flat))?.into_any().into());
                 }
 
-                // stack / concatenate — both honor an explicit `axis` kwarg/pos.
+                // stack / concatenate honor an explicit `axis` kwarg/pos.
                 let axis = extract_axis(args, kwargs)?.unwrap_or(0);
 
-                // If every input is scalar or 1-D and no stack-specific shape growth is
-                // needed, fall back to flat concat (preserves existing 1-D semantics).
+                // Flat fast path: for scalar/1-D inputs, `concatenate` and
+                // `hstack` are exactly the flat join (numpy: hstack of 1-D is
+                // axis-0 concatenation).
                 let all_1d_or_scalar = items.iter().all(|(s, _)| s.len() <= 1);
-                if all_1d_or_scalar && name == "concatenate" {
+                if all_1d_or_scalar && matches!(name.as_str(), "concatenate" | "hstack") {
                     let mut flat: Vec<NodeId> = Vec::new();
                     for (_, nodes) in items { flat.extend(nodes); }
                     return Ok(Py::new(py, JitTracerArray::from_nodes(&self.graph, flat))?.into_any().into());
+                }
+
+                // N-D hstack = concatenation along axis 1; N-D vstack promotes
+                // (n,) → (1,n) and scalars → (1,1), then concatenates along
+                // axis 0 (numpy semantics — the former flat path produced the
+                // wrong element order for 2-D hstack).
+                if name == "hstack" {
+                    let (out_shape, nodes) = concat_nd(&items, 1)?;
+                    return Ok(Py::new(py, JitTracerArray::from_nodes_shape(
+                        &self.graph, nodes, out_shape))?.into_any().into());
+                }
+                if name == "vstack" {
+                    let items: Vec<(Vec<usize>, Vec<NodeId>)> = items.into_iter()
+                        .map(|(s, n)| match s.len() {
+                            0 => (vec![1, 1], n),
+                            1 => { let w = s[0]; (vec![1, w], n) }
+                            _ => (s, n),
+                        }).collect();
+                    let (out_shape, nodes) = concat_nd(&items, 0)?;
+                    return Ok(Py::new(py, JitTracerArray::from_nodes_shape(
+                        &self.graph, nodes, out_shape))?.into_any().into());
                 }
 
                 match name.as_str() {
@@ -1935,62 +2453,7 @@ impl JitTracerArray {
                         Ok(Py::new(py, JitTracerArray::from_nodes_shape(&self.graph, nodes, out_shape))?.into_any().into())
                     }
                     "concatenate" => {
-                        // All inputs must share shape except on `axis`.
-                        let ref_shape = items[0].0.clone();
-                        let rank = ref_shape.len();
-                        if rank == 0 {
-                            return Err(pyo3::exceptions::PyValueError::new_err(
-                                "np.concatenate: 0-D arrays cannot be concatenated"
-                            ));
-                        }
-                        let ax = if axis < 0 { rank as isize + axis } else { axis } as usize;
-                        if ax >= rank {
-                            return Err(pyo3::exceptions::PyValueError::new_err(
-                                format!("np.concatenate: axis {} out of bounds for rank {}", axis, rank)
-                            ));
-                        }
-                        let mut out_shape = ref_shape.clone();
-                        out_shape[ax] = 0;
-                        for (s, _) in &items {
-                            if s.len() != rank {
-                                return Err(pyo3::exceptions::PyValueError::new_err(
-                                    format!("np.concatenate: rank mismatch {} vs {}", rank, s.len())
-                                ));
-                            }
-                            for d in 0..rank {
-                                if d == ax { out_shape[ax] += s[d]; }
-                                else if s[d] != ref_shape[d] {
-                                    return Err(pyo3::exceptions::PyValueError::new_err(
-                                        format!("np.concatenate: shape mismatch on axis {} ({} vs {})", d, ref_shape[d], s[d])
-                                    ));
-                                }
-                            }
-                        }
-                        let out_size: usize = out_shape.iter().product();
-                        let out_strides = strides_row_major(&out_shape);
-                        let mut nodes = vec![0u32; out_size];
-                        let mut axis_offset = 0usize;
-                        for (src_shape, src_nodes) in &items {
-                            let src_strides = strides_row_major(src_shape);
-                            let src_size: usize = src_shape.iter().product();
-                            let mut src_idx = vec![0usize; rank];
-                            for _ in 0..src_size {
-                                let mut src_flat = 0usize;
-                                let mut dst_flat = 0usize;
-                                for d in 0..rank {
-                                    src_flat += src_idx[d] * src_strides[d];
-                                    let out_pos = if d == ax { src_idx[d] + axis_offset } else { src_idx[d] };
-                                    dst_flat += out_pos * out_strides[d];
-                                }
-                                nodes[dst_flat] = src_nodes[src_flat];
-                                for d in (0..rank).rev() {
-                                    src_idx[d] += 1;
-                                    if src_idx[d] < src_shape[d] { break; }
-                                    src_idx[d] = 0;
-                                }
-                            }
-                            axis_offset += src_shape[ax];
-                        }
+                        let (out_shape, nodes) = concat_nd(&items, axis)?;
                         Ok(Py::new(py, JitTracerArray::from_nodes_shape(&self.graph, nodes, out_shape))?.into_any().into())
                     }
                     _ => unreachable!(),
@@ -2143,13 +2606,10 @@ impl JitTracerArray {
             // np.cumprod — 1-D running product (mirrors the cumsum arm).
             "cumprod" => {
                 if self.shape.len() > 1 || self.size == 0 { return Ok(py.NotImplemented().into()); }
-                let mut acc = self.get_node(0);
-                let mut nodes = Vec::with_capacity(self.size);
-                nodes.push(acc);
-                for i in 1..self.size {
-                    acc = self.graph.binary(BinOp::Mul, acc, self.get_node(i));
-                    nodes.push(acc);
+                if args.len() > 1 || !kwargs_subset(kwargs, &[]) {
+                    return Ok(py.NotImplemented().into());
                 }
+                let nodes = cumulative(self, BinOp::Mul);
                 Ok(Py::new(py, JitTracerArray::from_nodes(&self.graph, nodes))?.into_any().into())
             }
             // np.outer(a, b) — (m, n) products; numpy flattens its inputs.
@@ -2195,9 +2655,10 @@ impl JitTracerArray {
                 let Ok(ta) = args.get_item(0)?.extract::<JitTracerArray>() else {
                     return Ok(py.NotImplemented().into());
                 };
-                let nodes: Vec<NodeId> = (0..ta.size)
-                    .map(|i| super::emit_interp(&ta.graph, ta.get_node(i), &xp, &fp))
-                    .collect();
+                let ids = ta.materialize();
+                let nodes: Vec<NodeId> = ta.graph.with(|g| {
+                    ids.iter().map(|&x| super::emit_interp_g(g, x, &xp, &fp)).collect()
+                });
                 Ok(Py::new(py, JitTracerArray::from_nodes_shape(
                     &ta.graph, nodes, ta.shape.clone()))?.into_any().into())
             }
@@ -2214,7 +2675,7 @@ impl JitTracerArray {
     }
 }
 
-#[pyclass]
+#[pyclass(unsendable)]
 struct JitTracerArrayIter {
     array: JitTracerArray,
     index: usize,

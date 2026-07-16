@@ -40,6 +40,7 @@ pub(crate) const EUF_TABLEAU: Tableau = Tableau {
     bt: &[&[1.0]],
     tr: &[],
     a_final: &[],
+    di: &[],
 };
 
 /// Everything the integrator emitter needs beyond the tableau itself.
