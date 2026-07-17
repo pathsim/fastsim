@@ -27,6 +27,12 @@ add_library({{ name }} STATIC
 {% endfor %}
 )
 target_include_directories({{ name }} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# No FMA contraction: the sources carry `#pragma STDC FP_CONTRACT OFF`, but gcc
+# ignores that pragma and contracts by default under optimization - which can
+# shift a scheduled event by one step at an exactly-aligned boundary. The flag
+# keeps the C trajectory bit-identical to the fastsim reference.
+target_compile_options({{ name }} PRIVATE
+    $<$<OR:$<C_COMPILER_ID:GNU>,$<C_COMPILER_ID:Clang>,$<C_COMPILER_ID:AppleClang>>:-ffp-contract=off>)
 # The model needs libm only (C99 + <math.h>); MSVC bundles it in the CRT.
 if(UNIX)
     target_link_libraries({{ name }} PUBLIC m)

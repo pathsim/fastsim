@@ -224,11 +224,13 @@ fn emit_event_section(model_t: &str, outputs_fn: &str, events: &EventLayout, n_s
                     "    {{ double cur = guard_{suf}(m); if (cur != 0.0 && (!m->init_{suf} || m->prev_{suf} == 0.0)) {{ effect_{suf}(m); {chg}}} m->prev_{suf} = cur; m->init_{suf} = 1; }}"
                 );
             }
-            EventKindInfo::Periodic { period, .. } => {
+            EventKindInfo::Periodic { period, phase } => {
+                // Next scheduled time recomputed as `phase + k*period` (matches
+                // the C-codegen struct field `k_<suf>` and the runtime scheduler).
                 let _ = write!(
                     s,
-                    "    while (m->time + EVENT_TIME_TOL >= m->next_{suf}) {{ effect_{suf}(m); m->next_{suf} += {period:?}; {chg}}}\n\
-                     \x20   if (m->next_{suf} < next_t) next_t = m->next_{suf};\n\
+                    "    while (m->time + EVENT_TIME_TOL >= {phase:?} + (double)m->k_{suf} * {period:?}) {{ effect_{suf}(m); m->k_{suf}++; {chg}}}\n\
+                     \x20   {{ double nt_{suf} = {phase:?} + (double)m->k_{suf} * {period:?}; if (nt_{suf} < next_t) next_t = nt_{suf}; }}\n\
                      \x20   next_def = 1;\n"
                 );
             }

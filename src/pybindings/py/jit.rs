@@ -217,6 +217,31 @@ pub fn _trace_wrapper(
     b.opaque_feedthrough = false; // wrapper declares no direct feedthrough
     b.len_fn = Some(Box::new(|_| 0));
 
+    // Op-expressible representation for the IR / codegen / compiled-fusion path:
+    // a memory (ZOH) slot written every period by the traced effect graph and
+    // read back by the alg pass — the same discrete shape SampleHold uses, but
+    // the effect is `func(u)` instead of identity. Returns `None` at any width
+    // the Python effect does not trace, so an untraceable wrapper degrades
+    // gracefully to an opaque extern (interpreted-only) instead of lowering.
+    let traced_disc = traced.clone();
+    b.set_discrete_lazy("Wrapper", move |ni| {
+        use crate::blocks::blockops::{
+            mem_read_alg_graph, EventKindSpec, EventSpec, MemSpec, MemTarget,
+        };
+        let effect = traced_disc.graph_for_key(&[ni])?;
+        let no = effect.outputs.len();
+        let alg = mem_read_alg_graph(0, no);
+        let memory = vec![MemSpec { name: "held".into(), init: vec![0.0; no] }];
+        let targets: Vec<MemTarget> =
+            (0..no as u32).map(|i| MemTarget { slot: 0, offset: i }).collect();
+        let events = vec![EventSpec {
+            kind: EventKindSpec::SchedulePeriodic { period, phase: tau },
+            effect,
+            targets,
+        }];
+        Some((alg, memory, events))
+    });
+
     let input_upd = input_snap.clone();
     let output_upd = output.clone();
     b.update_fn = Some(Box::new(move |blk, _t| {

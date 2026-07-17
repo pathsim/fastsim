@@ -253,7 +253,7 @@ pub fn sample_hold(period: f64, tau: f64) -> BlockRef {
             effect,
             targets,
         }];
-        (alg, memory, events)
+        Some((alg, memory, events))
     });
 
     let blk_ref: BlockRef = Rc::new(FastCell::new(b));
@@ -409,7 +409,7 @@ pub fn fir(coeffs: Vec<f64>, period: f64, tau: f64) -> BlockRef {
                 effect,
                 targets,
             }];
-            (alg, memory, events)
+            Some((alg, memory, events))
         });
     }
 
@@ -473,6 +473,11 @@ pub fn adc(n_bits: usize, span_lo: f64, span_hi: f64, period: f64, tau: f64) -> 
         None,
     );
     b.type_name = "ADC";
+    // Declare the full bit fan-out up front (port i = bit i, LSB..MSB — pathsim
+    // parity): the IR/codegen output layout is sized from the declared ports, so
+    // an under-declaration would under-size the signal buffer when not every bit
+    // is connected (same pattern as TappedDelay).
+    b.outputs = Register::new(Some(n_bits), None);
     b.role = BlockRole { is_dyn: false, is_src: false, is_rec: false };
     b.len_fn = Some(Box::new(|_| 0));
 
@@ -561,6 +566,10 @@ pub fn dac(n_bits: usize, span_lo: f64, span_hi: f64, period: f64, tau: f64) -> 
         Some(out_port_map()),
     );
     b.type_name = "DAC";
+    // Declare the full bit fan-in up front (port i = bit i, LSB..MSB — pathsim
+    // parity): the event effect graph reads `("u", n_bits)`, so the input width
+    // must match even when not every bit is connected (unconnected bits read 0).
+    b.inputs = Register::new(Some(n_bits), None);
     b.role = BlockRole { is_dyn: false, is_src: false, is_rec: false };
     b.len_fn = Some(Box::new(|_| 0));
 
@@ -756,7 +765,7 @@ pub fn first_order_hold(period: f64, tau: f64) -> BlockRef {
                 effect,
                 targets,
             }];
-            (alg, memory, events)
+            Some((alg, memory, events))
         });
     }
 
@@ -982,7 +991,7 @@ pub fn discrete_derivative(period: f64, tau: f64) -> BlockRef {
             effect,
             targets,
         }];
-        (alg, memory, events)
+        Some((alg, memory, events))
     });
 
     let blk_ref: BlockRef = Rc::new(FastCell::new(b));

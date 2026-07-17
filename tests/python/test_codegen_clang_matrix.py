@@ -88,7 +88,7 @@ def _compile_and_run(files, duration, dt, tmp_path):
     cfiles = [str(tmp_path / f) for f in files if f.endswith(".c")] + [str(tmp_path / "main.c")]
     exe = str(tmp_path / "model_run.exe")
     env = _cc_env(tmp_path)
-    r = subprocess.run([*_CC.split(), "-std=c99", "-O2", "-I", str(tmp_path), *cfiles, "-lm", "-o", exe],
+    r = subprocess.run([*_CC.split(), "-std=c99", "-O2", "-ffp-contract=off", "-I", str(tmp_path), *cfiles, "-lm", "-o", exe],
                        capture_output=True, text=True, env=env)
     if r.returncode != 0:
         if "error:" not in r.stderr:

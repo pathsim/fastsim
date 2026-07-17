@@ -5,4 +5,8 @@
 -#}
 #include "{{ file_base }}_solver.h"
 
+/* No FMA contraction — round exactly as written, matching the reference runtime
+   (see the note in the model TU). */
+#pragma STDC FP_CONTRACT OFF
+
 {% include "solver_impl_struct.c" %}

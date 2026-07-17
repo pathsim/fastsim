@@ -165,7 +165,7 @@ pub struct LeafOps<'a> {
     pub events: &'a [EventSpec],
     /// Shape-poly discrete blocks: resolves `(alg, memory, events)` at the
     /// connected input width, used in place of `alg`/`memory`/`events`.
-    pub discrete_builder: Option<&'a Rc<dyn Fn(usize) -> DiscreteResolved>>,
+    pub discrete_builder: Option<&'a Rc<dyn Fn(usize) -> Option<DiscreteResolved>>>,
     /// Lookup-table structure: when set, `alg` lowers to a single `Op::Lut1d`.
     pub lut1d: Option<&'a Lut1dSpec>,
 }
@@ -223,16 +223,24 @@ pub fn build_from_ops(
     output_width: u32,
 ) -> Option<Block_> {
     let in_sizes = vec![input_width];
-    let out_sizes = vec![output_width];
-    let dec = GraphDecode { input_port_sizes: &in_sizes, output_port_sizes: &out_sizes };
 
     // Shape-poly discrete blocks resolve (alg, memory, events) at the input width.
     let (alg_graph, mem_specs, evt_specs) = match ops.discrete_builder {
-        Some(build) => build(input_width as usize),
+        // A discrete builder that returns `None` at this width is not
+        // op-traceable here (e.g. a JIT-traced Wrapper whose Python effect does
+        // not trace) -> opaque (the caller emits an extern Call).
+        Some(build) => build(input_width as usize)?,
         // A non-resolvable `Lazy` alg region means the block is not op-traceable
         // here -> opaque (the caller emits an extern Call).
         None => (ops.alg.resolve(input_width as usize)?, ops.memory.to_vec(), ops.events.to_vec()),
     };
+    // The algebraic graph is the single source of truth for the block's output
+    // arity: a block may declare fewer output ports than its region actually
+    // writes (e.g. an n-bit ADC whose bit ports resolve lazily), and undersizing
+    // the output layout overflows the `sig[]` buffer. Take the larger of the two.
+    let output_width = output_width.max(alg_graph.outputs.len() as u32);
+    let out_sizes = vec![output_width];
+    let dec = GraphDecode { input_port_sizes: &in_sizes, output_port_sizes: &out_sizes };
     // A LUT1D block lowers to a single structured `Op::Lut1d` (the table) rather
     // than tracing its equivalent select-chain graph, so table-aware backends
     // emit a real lookup table. The runtime closure and `splice` are unaffected.

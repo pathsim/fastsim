@@ -11,6 +11,13 @@
 {% endif %}#include "{{ file_base }}_solver.h"
 {% endif %}
 
+/* Evaluate floating-point exactly as written: no FMA / multiply-add contraction.
+   The reference runtime does not contract, so an event's scheduled time
+   `phase + k*period` (and every other expression) must round identically here or
+   a discrete fire/no-fire decision can flip by one step. Toolchains that honor
+   this pragma need no `-ffp-contract=off` on the command line. */
+#pragma STDC FP_CONTRACT OFF
+
 {% if not library %}{{ block_fns }}{% endif %}
 {% if has_sig %}
 /* Recompute all block output signals into `m->sig` from the current state.
@@ -58,13 +65,13 @@ void {{ name }}_handle_events({{ name }}_t * restrict m, {{ real }} dt) {
 {% endif %}
 {% for e in events %}
 {% if e.kind == "periodic" %}
-    while (m->next_{{ e.suffix }} <= m->time + {{ half_dt }}) {
+    while ({{ e.phase }} + ({{ real }})m->k_{{ e.suffix }} * {{ e.period }} <= m->time + {{ evt_tol }}) {
         effect_{{ e.suffix }}(m);
-        m->next_{{ e.suffix }} += {{ e.period }};
+        m->k_{{ e.suffix }}++;
     }
 {% elif e.kind == "fixed" %}
     static const {{ real }} times_{{ e.suffix }}[] = { {{ e.times | join(", ") }} };
-    while (m->fi_{{ e.suffix }} < {{ e.times | length }} && times_{{ e.suffix }}[m->fi_{{ e.suffix }}] <= m->time + {{ half_dt }}) {
+    while (m->fi_{{ e.suffix }} < {{ e.times | length }} && times_{{ e.suffix }}[m->fi_{{ e.suffix }}] <= m->time + {{ evt_tol }}) {
         effect_{{ e.suffix }}(m);
         m->fi_{{ e.suffix }}++;
     }

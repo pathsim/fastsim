@@ -276,7 +276,15 @@ pub fn verify_c(
         .map(|f| f.name.clone())
         .collect();
     args.push("main.c".into());
-    args.extend(["-std=c99", "-O2", "-o", "verify.exe", "-lm"].iter().map(|s| s.to_string()));
+    // `-ffp-contract=off`: the generated C carries `#pragma STDC FP_CONTRACT OFF`,
+    // but gcc ignores that pragma (and contracts to FMA under -O2 by default),
+    // which can flip a discrete event's fire/no-fire decision at a step boundary
+    // by one ULP. The explicit flag makes the SiL comparison compiler-independent.
+    args.extend(
+        ["-std=c99", "-O2", "-ffp-contract=off", "-o", "verify.exe", "-lm"]
+            .iter()
+            .map(|s| s.to_string()),
+    );
     let t_compile = std::time::Instant::now();
     let out = cc_command_in(&compiler, &dir)
         .args(&args)

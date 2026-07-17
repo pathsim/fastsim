@@ -849,7 +849,7 @@ fn model_struct_fields(
     for ev in events {
         let suffix = ev.suffix();
         match ev {
-            EventSpec::Periodic { .. } => push(format!("next_{suffix}"), real, 1, real_size),
+            EventSpec::Periodic { .. } => push(format!("k_{suffix}"), "size_t", 1, 8),
             EventSpec::Fixed { .. } => push(format!("fi_{suffix}"), "size_t", 1, 8),
             EventSpec::ZeroCross { .. } | EventSpec::Condition { .. } => {
                 push(format!("prev_{suffix}"), real, 1, real_size);
@@ -1168,7 +1168,7 @@ fn build_trace_json(
     let mut event_field_bytes = 0usize;
     for ev in &events {
         event_field_bytes += match ev {
-            EventSpec::Periodic { .. } => real_bytes,
+            EventSpec::Periodic { .. } => 8, // size_t fire count
             EventSpec::Fixed { .. } => 8, // size_t index
             EventSpec::ZeroCross { .. } | EventSpec::Condition { .. } => real_bytes + 4,
         };
@@ -1744,8 +1744,15 @@ struct StructCtx {
     /// Extra `model_t` fields the integrator needs (adaptive solvers carry `fs_h`).
     solver_fields: Vec<String>,
     /// `0.5 * dt`, numeric-aware (`(dt >> 1)` under fixed point) — the step
-    /// tolerance used by the event schedulers and the discrete run loop.
+    /// tolerance used by the discrete run loop's end-of-horizon guard.
     half_dt: String,
+    /// Event-firing slack added to `m->time` in the schedule tests. Zero for
+    /// `double`/fixed point, where the clock is exact and a strict `<=` fires an
+    /// event on precisely the step the (double) reference runtime does — the SiL
+    /// bit-parity contract. For `float`, `m->time` accumulates in single precision
+    /// and drifts from the double reference, so a half-step slack keeps the fired
+    /// step aligned with the reference despite the drift.
+    evt_tol: String,
     /// Fractional bits under fixed point (`None` for double/float): drives
     /// the `<NAME>_Q_*` conversion macros in the emitted header.
     fixed_frac: Option<u8>,
@@ -2403,6 +2410,13 @@ fn build_struct_ctx(module: &Module, opts: &CodegenOptions) -> R<StructCtx> {
             Some(_) => "(dt >> 1)".to_string(),
             None => format!("{} * dt", lit(0.5)),
         },
+        evt_tol: match opts.numeric {
+            // Exact clock: strict `<=` fires on the same step as the runtime.
+            Numeric::Double | Numeric::Fixed { .. } => "0".to_string(),
+            // Single-precision clock drifts from the double reference; a half-step
+            // slack keeps the fired step aligned despite the drift.
+            Numeric::Float => format!("{} * dt", lit(0.5)),
+        },
         has_events: !events.is_empty(),
         need_sig_handle: ev.need_sig,
         event_fns: ev.fns,
@@ -2524,8 +2538,12 @@ fn build_struct_events(
             EventSpec::Periodic { period: p, phase: ph, .. } => {
                 phase = lit(*ph);
                 period = lit(*p);
-                fields.push(format!("    {t} next_{suffix};"));
-                inits.push(format!("    m->next_{suffix} = {};", lit(*ph)));
+                // Count of events fired; the next scheduled time is recomputed as
+                // `phase + k * period` (multiplication), bit-identical to the
+                // runtime scheduler's `t_start + n * t_period` — an accumulating
+                // `next += period` would drift and miss the boundary parity.
+                fields.push(format!("    size_t k_{suffix};"));
+                inits.push(format!("    m->k_{suffix} = 0;"));
                 "periodic"
             }
             EventSpec::Fixed { times: ts, .. } => {

@@ -20,11 +20,20 @@ and "License (Output)" below.
   The code is freestanding apart from libm and is safe on embedded targets.
 
 ```bash
-cc -std=c99 model.c main.c -lm -o model      # Compact layout
-cc -std=c99 *.c -lm -o model                 # Library layout (multi-file)
+cc -std=c99 -ffp-contract=off model.c main.c -lm -o model   # Compact layout
+cc -std=c99 -ffp-contract=off *.c -lm -o model              # Library layout (multi-file)
 ```
 
 `float` numeric models call the `f`-suffixed libm functions (`sinf`, `powf`, …).
+
+**Floating-point determinism.** The sources carry `#pragma STDC FP_CONTRACT OFF`
+so expressions round exactly as written — that is what makes the C trajectory
+bit-identical to the fastsim reference (`double` numeric), including the step on
+which a scheduled event fires. Clang honors the pragma; **gcc ignores it** and
+contracts to FMA under optimization by default, which can shift an
+exactly-boundary-aligned event by one step. Pass `-ffp-contract=off` explicitly
+(as above) when bit-exact SiL agreement matters; the generated CMake scaffold
+sets it for gcc/clang automatically.
 
 ---
 

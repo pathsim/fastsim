@@ -150,8 +150,11 @@ pub struct Block {
     pub op_events: Vec<crate::blocks::blockops::EventSpec>,
     /// Shape-poly discrete resolver: yields `(alg, memory, events)` at the
     /// connected input width (used in place of `alg_op` for those blocks).
+    /// Returns `None` when the block cannot lower at this width (e.g. a
+    /// JIT-traced effect whose Python callable does not trace) — the block then
+    /// surfaces as an opaque extern `Op::Call`, same as any unported block.
     pub op_discrete_builder:
-        Option<std::rc::Rc<dyn Fn(usize) -> crate::blocks::blockops::DiscreteResolved>>,
+        Option<std::rc::Rc<dyn Fn(usize) -> Option<crate::blocks::blockops::DiscreteResolved>>>,
     /// IR type name, which can differ from the runtime `type_name` (e.g.
     /// "Source" vs "SinusoidalSource"). Set by the `set_*` operator helpers.
     pub op_type_name: Option<&'static str>,
@@ -269,7 +272,8 @@ impl Block {
         let resolved_alg = if alg_rg.is_none() {
             self.op_discrete_builder
                 .as_ref()
-                .map(|b| b(n_in.max(1)).0)
+                .and_then(|b| b(n_in.max(1)))
+                .map(|(alg, _, _)| alg)
         } else {
             None
         };
@@ -530,7 +534,7 @@ impl Block {
     pub fn set_discrete_lazy(
         &mut self,
         type_name: &'static str,
-        builder: impl Fn(usize) -> crate::blocks::blockops::DiscreteResolved + 'static,
+        builder: impl Fn(usize) -> Option<crate::blocks::blockops::DiscreteResolved> + 'static,
     ) {
         self.op_type_name = Some(type_name);
         self.op_discrete_builder = Some(std::rc::Rc::new(builder));
