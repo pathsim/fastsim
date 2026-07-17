@@ -20,7 +20,10 @@ and applies the highest-acceleration strategy that is still faithful:
   own methods, but ``block.engine`` is replaced by a :class:`CaptureShim` that
   only captures the RHS while fastsim's own (Rust) engine does the integration.
   fastsim owns the single stage loop, so there is no second engine and no stage
-  synchronization to get wrong.
+  synchronization to get wrong. Blocks without ``initial_value`` (algebraic /
+  internal-solver blocks, e.g. a ``BVP1D`` subclass with a custom ``update``)
+  take the **algebraic shim**: their own ``update(t)`` drives the outputs
+  through a Python-callback ``DynamicalFunction``.
 
 (Tier 2 — partial acceleration, e.g. a JIT-able ``op_alg`` with custom
 dynamics — is a future refinement; such blocks currently take Tier 3.)
@@ -265,8 +268,13 @@ def _make_wrapped_act(func_act, fs_block, shim):
 
     The original ``func_act`` mutates the wrapped block (i.e. the shim's state);
     fastsim's real engine must adopt that, otherwise the next ``update`` syncs
-    the engine state back onto the shim and clobbers the action.
+    the engine state back onto the shim and clobbers the action. Algebraic
+    shims (``shim is None``) carry no engine state — the action's mutations
+    live on the wrapped block itself and are picked up by the next ``update``.
     """
+    if shim is None:
+        return func_act
+
     def wrapped(t):
         func_act(t)
         fs_block.state = np.atleast_1d(shim.get()).tolist()
@@ -292,6 +300,43 @@ def _translate_events(ps_block, fs_block, shim):
     return translated, unsupported
 
 
+def _port_algebraic_shim(block):
+    """Tier 3b: algebraic shim — faithful Python fallback for stateless blocks.
+
+    A pathsim block without ``initial_value`` computes its outputs purely from
+    its inputs in ``update(t)`` (directly, or through an internal solver like
+    ``BVP1D``'s collocation — including any custom ``update`` override, e.g.
+    pathsim-chem's ``GLC`` post-processing). The wrapper feeds fastsim's stage
+    inputs into the still-live pathsim block, runs its own ``update``, and
+    returns its outputs — hosted on a raw ``_fastsim.DynamicalFunction``
+    (Python callback; never traced, so internal scipy/solver calls are fine).
+    Internal state the block keeps across evaluations (warm-started meshes,
+    caches) lives on the block instance the closure holds, exactly as it would
+    under pathsim's own loop.
+    """
+    type_name = type(block).__name__
+
+    def func_alg(u, t):
+        block.inputs.update_from_array(np.atleast_1d(u))
+        block.update(t)
+        return block.outputs.to_array()
+
+    fs_block = _fastsim.DynamicalFunction(func_alg)
+
+    translated, unsupported = _translate_events(block, fs_block, None)
+    for ev in translated:
+        fs_block.add_event(ev)
+    if translated:
+        log.info("PORT events: %s -> %d fastsim event(s) forwarded", type_name, len(translated))
+    if unsupported:
+        log.warning(
+            "PORT: %s has unsupported internal event type(s) %s — NOT carried over",
+            type_name, unsupported,
+        )
+    log.info("PORT algebraic shim: %s (stateless; update() drives the outputs)", type_name)
+    return fs_block
+
+
 def _port_via_shim(block):
     """Tier 3: engine-shim / RHS-capture fallback (faithful, ~10-100x slower).
 
@@ -302,11 +347,10 @@ def _port_via_shim(block):
     type_name = type(block).__name__
     iv = getattr(block, "initial_value", None)
     if iv is None:
-        raise NotImplementedError(
-            "port(): only dynamic blocks exposing 'initial_value' are supported "
-            "(e.g. Integrator, DynamicalSystem, ODE). Algebraic blocks are a "
-            "later phase."
-        )
+        # No continuous state: an algebraic (or internal-solver) block whose
+        # outputs come entirely from `update(t)` — e.g. a `BVP1D` subclass with
+        # a custom update. It gets the algebraic shim.
+        return _port_algebraic_shim(block)
 
     shim = CaptureShim(iv)
     block.engine = shim

@@ -7,7 +7,7 @@ name = "fastsim"
 # Keep in sync with Cargo.toml `version` and python/fastsim/__init__.py
 # `__version__` — CI's "Version consistency" gate fails on drift, and the release
 # workflow rewrites all three from the git tag.
-version = "0.20.0"
+version = "0.21.0"
 description = "A fast, Rust-based block-diagram system simulation framework — drop-in replacement for pathsim"
 requires-python = ">=3.8"
 license = {text = "PolyForm-Noncommercial-1.0.0"}

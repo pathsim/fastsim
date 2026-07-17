@@ -60,32 +60,35 @@ def _build_registry() -> dict[type, type]:
 
     import fastsim.blocks as fs_blocks
 
-    # Only generic "composition base" blocks — the ones a domain toolbox would
-    # realistically inherit from to expose a domain API while delegating the
-    # heavy lifting to a standard block. End-user blocks (Integrator, Amplifier,
-    # Source, Scope, ...) are not intended as subclassing targets and stay out.
-    _BASE_NAMES = (
-        # Generic ODE / DAE composition targets
-        "Function",
-        "ODE",
-        "StateSpace",
-        "DynamicalSystem",
-        "DynamicalFunction",
-        "MassMatrixDAE",
-        "SemiExplicitDAE",
-        "FullyImplicitDAE",
-        "Wrapper",
-        # Linear transfer-function bases
-        "TransferFunction",
-        "TransferFunctionNumDen",
-        "TransferFunctionPRC",
-        "TransferFunctionZPG",
-    )
-    for name in _BASE_NAMES:
+    # NAMESAKE-COMPLETE: every pathsim block class with a same-name fastsim
+    # equivalent is a rebase target. Toolboxes subclass not only the generic
+    # composition bases (Function, ODE, DynamicalSystem, ...) but also
+    # "end-user" blocks — pathsim-chem's GLC extends BVP1D. Correctness stays
+    # guarded downstream: `adapt`'s override check and `port`'s engine-hook
+    # check refuse any subclass that shadows base behaviour, so an
+    # over-complete registry can never mis-rebase — it only widens the set of
+    # thin (`__init__`-only) subclasses that run natively. pathsim's `Block`
+    # itself stays out: a direct Block subclass is custom by definition.
+    try:
+        from pathsim.blocks._block import Block as _PsBlock
+    except Exception:
+        _registry_cache = mapping
+        return mapping
+    fs_block_base = getattr(fs_blocks, "Block", None)
+
+    for name in dir(ps_blocks):
+        if name.startswith("_") or name == "Block":
+            continue
         ps_cls = getattr(ps_blocks, name, None)
         fs_cls = getattr(fs_blocks, name, None)
-        if isinstance(ps_cls, type) and isinstance(fs_cls, type):
-            mapping[ps_cls] = fs_cls
+        if not (isinstance(ps_cls, type) and isinstance(fs_cls, type)):
+            continue
+        # Filter the module's re-exports that are not blocks (events, helpers).
+        if not issubclass(ps_cls, _PsBlock) or ps_cls is _PsBlock:
+            continue
+        if fs_block_base is not None and not issubclass(fs_cls, fs_block_base):
+            continue
+        mapping[ps_cls] = fs_cls
 
     _registry_cache = mapping
     return mapping
