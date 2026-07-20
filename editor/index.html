@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" href="/editor/favicon.png" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<!-- Cross-origin isolation on GitHub Pages (no header control there): the
+		     serviceworker injects COOP: same-origin + COEP: credentialless, which
+		     the codegen "Run C" path (Wasmer/SharedArrayBuffer) requires. -->
+		<script src="/editor/coi-serviceworker.min.js"></script>
+		<title>FastSim — Visual Block Diagram Simulation Editor</title>
+		<meta name="description" content="Build and simulate dynamic systems visually in your browser. Drag-and-drop block diagram editor powered by the FastSim engine. No installation required." />
+		<link rel="canonical" href="https://fast.pathsim.org/editor" />
+		<meta property="og:type" content="website" />
+		<meta property="og:title" content="FastSim — Visual Block Diagram Simulation Editor" />
+		<meta property="og:description" content="Build and simulate dynamic systems visually in your browser. Drag-and-drop block diagram editor powered by the FastSim engine." />
+		<script type="application/ld+json">
+		{
+			"@context": "https://schema.org",
+			"@type": "SoftwareApplication",
+			"name": "FastSim",
+			"url": "https://fast.pathsim.org/editor",
+			"applicationCategory": "Scientific Software",
+			"operatingSystem": "Any",
+			"description": "Visual node editor for building and simulating dynamic systems with the FastSim engine.",
+			"author": { "@type": "Person", "name": "Milan Rother", "url": "https://milanrother.com" }
+		}
+		</script>
+		<meta property="og:image" content="https://fast.pathsim.org/editor/fastsim_logo.png" />
+		<meta property="og:url" content="https://fast.pathsim.org/editor" />
+		<meta name="twitter:card" content="summary_large_image" />
+		<meta name="twitter:title" content="FastSim" />
+		<meta name="twitter:description" content="Visual node editor for building and simulating dynamic systems with the FastSim engine" />
+		<meta name="twitter:image" content="https://fast.pathsim.org/editor/fastsim_logo.png" />
+		
+		<link rel="modulepreload" href="/editor/app/immutable/entry/start._WLXyXDC.js">
+		<link rel="modulepreload" href="/editor/app/immutable/chunks/C8tFesc4.js">
+		<link rel="modulepreload" href="/editor/app/immutable/chunks/DfLkyZf0.js">
+		<link rel="modulepreload" href="/editor/app/immutable/entry/app.CI4RzhOX.js">
+		<link rel="modulepreload" href="/editor/app/immutable/chunks/DGdWNInZ.js">
+		<link rel="modulepreload" href="/editor/app/immutable/chunks/nLwvHGWE.js">
+		<link rel="modulepreload" href="/editor/app/immutable/chunks/Be53npBH.js">
+		<link rel="modulepreload" href="/editor/app/immutable/chunks/6z6MyJtn.js">
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">
+			<script>
+				{
+					__sveltekit_18t8isb = {
+						base: "/editor",
+						assets: "/editor"
+					};
+
+					const element = document.currentScript.parentElement;
+
+					Promise.all([
+						import("/editor/app/immutable/entry/start._WLXyXDC.js"),
+						import("/editor/app/immutable/entry/app.CI4RzhOX.js")
+					]).then(([kit, app]) => {
+						kit.start(app, element);
+					});
+				}
+			</script>
+		</div>
+	</body>
+</html>
