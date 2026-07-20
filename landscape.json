@@ -1,0 +1,1000 @@
+{
+ "systems": [
+  "Glycolysis",
+  "Thomas cyclic",
+  "Fairen-Velarde",
+  "Flame",
+  "Morse oscillator",
+  "Chemical (CDIMA)",
+  "Bonhoeffer-vdP",
+  "Kuramoto ring (24)",
+  "Van der Pol array (12)",
+  "Allen-Cahn 1D (64)",
+  "Pendulum chain (16)",
+  "RC ladder (48)",
+  "FPU-alpha chain (16)",
+  "Wave 1D (48)",
+  "FitzHugh-Nagumo ring (24)",
+  "Van der Pol mu=1000",
+  "Robertson",
+  "HIRES",
+  "Oregonator",
+  "Brusselator-RD (2x16)"
+ ],
+ "tools": [
+  "fastsim_compiled",
+  "fastsim_blocks",
+  "pathsim_blocks",
+  "openmodelica",
+  "boost_odeint",
+  "casadi_cvodes",
+  "scipy",
+  "numba",
+  "diffrax",
+  "diffeqpy"
+ ],
+ "data": {
+  "Glycolysis": {
+   "fastsim_compiled": {
+    "warm_ms": 0.154,
+    "cold_ms": 0.714,
+    "steps": 289,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 0.494,
+    "cold_ms": 0.626,
+    "steps": 364,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 65.67,
+    "cold_ms": 66.41,
+    "steps": 364,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 4.65,
+    "cold_ms": 5.003,
+    "steps": 958,
+    "method": "scipy_LSODA"
+   },
+   "casadi_cvodes": {
+    "warm_ms": 0.752,
+    "cold_ms": 2.858,
+    "steps": 1106,
+    "method": "casadi_cvodes"
+   },
+   "diffrax": {
+    "warm_ms": 0.091,
+    "cold_ms": 402.75,
+    "steps": 405,
+    "method": "diffrax_Tsit5"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.102,
+    "cold_ms": 1298.326,
+    "steps": 370,
+    "method": "diffeqpy_Tsit5"
+   },
+   "boost_odeint": {
+    "warm_ms": 0.039,
+    "cold_ms": 2071.991,
+    "steps": 330,
+    "method": "boost_odeint"
+   },
+   "openmodelica": {
+    "warm_ms": 70.202,
+    "cold_ms": 1040.624,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "Thomas cyclic": {
+   "fastsim_compiled": {
+    "warm_ms": 0.749,
+    "cold_ms": 1.224,
+    "steps": 847,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 1.852,
+    "cold_ms": 1.994,
+    "steps": 1115,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 288.201,
+    "cold_ms": 289.293,
+    "steps": 1115,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 20.987,
+    "cold_ms": 21.254,
+    "steps": 3008,
+    "method": "scipy_LSODA"
+   },
+   "casadi_cvodes": {
+    "warm_ms": 2.107,
+    "cold_ms": 2.512,
+    "steps": 2881,
+    "method": "casadi_cvodes"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.303,
+    "cold_ms": 8.797,
+    "steps": 998,
+    "method": "diffeqpy_Tsit5"
+   },
+   "boost_odeint": {
+    "warm_ms": 0.169,
+    "cold_ms": 1958.292,
+    "steps": 922,
+    "method": "boost_odeint"
+   },
+   "openmodelica": {
+    "warm_ms": 68.431,
+    "cold_ms": 917.305,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "Fairen-Velarde": {
+   "fastsim_compiled": {
+    "warm_ms": 0.098,
+    "cold_ms": 0.604,
+    "steps": 186,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 0.278,
+    "cold_ms": 0.493,
+    "steps": 228,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 36.425,
+    "cold_ms": 37.229,
+    "steps": 228,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 2.714,
+    "cold_ms": 2.802,
+    "steps": 599,
+    "method": "scipy_LSODA"
+   },
+   "casadi_cvodes": {
+    "warm_ms": 0.424,
+    "cold_ms": 0.853,
+    "steps": 546,
+    "method": "casadi_cvodes"
+   },
+   "diffrax": {
+    "warm_ms": 0.068,
+    "cold_ms": 222.177,
+    "steps": 243,
+    "method": "diffrax_Tsit5"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.063,
+    "cold_ms": 5.985,
+    "steps": 229,
+    "method": "diffeqpy_Tsit5"
+   },
+   "boost_odeint": {
+    "warm_ms": 0.037,
+    "cold_ms": 1888.245,
+    "steps": 222,
+    "method": "boost_odeint"
+   },
+   "openmodelica": {
+    "warm_ms": 63.408,
+    "cold_ms": 893.493,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "Flame": {
+   "fastsim_compiled": {
+    "warm_ms": 1.058,
+    "cold_ms": 1.533,
+    "steps": 299,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 1.725,
+    "cold_ms": 1.905,
+    "steps": 315,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 44.022,
+    "cold_ms": 44.45,
+    "steps": 179,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 0.764,
+    "cold_ms": 0.881,
+    "steps": 177,
+    "method": "scipy_LSODA"
+   },
+   "casadi_cvodes": {
+    "warm_ms": 0.149,
+    "cold_ms": 0.521,
+    "steps": 205,
+    "method": "casadi_cvodes"
+   },
+   "diffrax": {
+    "warm_ms": 1.417,
+    "cold_ms": 658.723,
+    "steps": 932,
+    "method": "diffrax_Kvaerno5"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.106,
+    "cold_ms": 924.748,
+    "steps": 77,
+    "method": "diffeqpy_Rodas5P"
+   },
+   "openmodelica": {
+    "warm_ms": 64.667,
+    "cold_ms": 914.055,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "Morse oscillator": {
+   "fastsim_compiled": {
+    "warm_ms": 0.314,
+    "cold_ms": 0.797,
+    "steps": 388,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 0.734,
+    "cold_ms": 0.873,
+    "steps": 539,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 115.587,
+    "cold_ms": 116.462,
+    "steps": 539,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 9.254,
+    "cold_ms": 9.473,
+    "steps": 1310,
+    "method": "scipy_LSODA"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.153,
+    "cold_ms": 8.551,
+    "steps": 455,
+    "method": "diffeqpy_Tsit5"
+   },
+   "boost_odeint": {
+    "warm_ms": 0.058,
+    "cold_ms": 1896.959,
+    "steps": 388,
+    "method": "boost_odeint"
+   },
+   "openmodelica": {
+    "warm_ms": 66.071,
+    "cold_ms": 896.044,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "Chemical (CDIMA)": {
+   "fastsim_compiled": {
+    "warm_ms": 0.177,
+    "cold_ms": 0.656,
+    "steps": 331,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 0.541,
+    "cold_ms": 0.736,
+    "steps": 403,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 76.988,
+    "cold_ms": 78.793,
+    "steps": 403,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 4.56,
+    "cold_ms": 4.685,
+    "steps": 963,
+    "method": "scipy_LSODA"
+   },
+   "casadi_cvodes": {
+    "warm_ms": 0.664,
+    "cold_ms": 1.061,
+    "steps": 892,
+    "method": "casadi_cvodes"
+   },
+   "diffrax": {
+    "warm_ms": 0.087,
+    "cold_ms": 223.217,
+    "steps": 388,
+    "method": "diffrax_Tsit5"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.109,
+    "cold_ms": 6.467,
+    "steps": 404,
+    "method": "diffeqpy_Tsit5"
+   },
+   "boost_odeint": {
+    "warm_ms": 0.05,
+    "cold_ms": 1926.289,
+    "steps": 396,
+    "method": "boost_odeint"
+   },
+   "openmodelica": {
+    "warm_ms": 64.309,
+    "cold_ms": 890.84,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "Bonhoeffer-vdP": {
+   "fastsim_compiled": {
+    "warm_ms": 0.171,
+    "cold_ms": 0.668,
+    "steps": 212,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 0.383,
+    "cold_ms": 0.615,
+    "steps": 274,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 52.307,
+    "cold_ms": 53.214,
+    "steps": 274,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 3.569,
+    "cold_ms": 3.673,
+    "steps": 625,
+    "method": "scipy_LSODA"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.078,
+    "cold_ms": 7.099,
+    "steps": 260,
+    "method": "diffeqpy_Tsit5"
+   },
+   "boost_odeint": {
+    "warm_ms": 0.038,
+    "cold_ms": 1940.874,
+    "steps": 238,
+    "method": "boost_odeint"
+   },
+   "openmodelica": {
+    "warm_ms": 65.498,
+    "cold_ms": 906.087,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "Kuramoto ring (24)": {
+   "fastsim_compiled": {
+    "warm_ms": 0.309,
+    "cold_ms": 3.029,
+    "steps": 64,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 1.964,
+    "cold_ms": 3.367,
+    "steps": 72,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 239.688,
+    "cold_ms": 243.223,
+    "steps": 72,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 5.22,
+    "cold_ms": 5.927,
+    "steps": 210,
+    "method": "scipy_LSODA"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.089,
+    "cold_ms": 9.095,
+    "steps": 71,
+    "method": "diffeqpy_Tsit5"
+   },
+   "boost_odeint": {
+    "warm_ms": 0.089,
+    "cold_ms": 1923.798,
+    "steps": 77,
+    "method": "boost_odeint"
+   },
+   "openmodelica": {
+    "warm_ms": 75.754,
+    "cold_ms": 1025.533,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "Van der Pol array (12)": {
+   "fastsim_compiled": {
+    "warm_ms": 44.093,
+    "cold_ms": 47.173,
+    "steps": 3160,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 299.295,
+    "cold_ms": 301.745,
+    "steps": 3415,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 22199.975,
+    "cold_ms": 22048.301,
+    "steps": 2980,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 29.921,
+    "cold_ms": 31.661,
+    "steps": 1760,
+    "method": "scipy_LSODA"
+   },
+   "diffeqpy": {
+    "warm_ms": 6.071,
+    "cold_ms": 71.76,
+    "steps": 673,
+    "method": "diffeqpy_Rodas5P"
+   },
+   "openmodelica": {
+    "warm_ms": 79.704,
+    "cold_ms": 993.952,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "Allen-Cahn 1D (64)": {
+   "fastsim_compiled": {
+    "warm_ms": 4.136,
+    "cold_ms": 11.721,
+    "steps": 82,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 29.8,
+    "cold_ms": 36.659,
+    "steps": 107,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 182853.724,
+    "cold_ms": 191486.462,
+    "steps": 889,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 3.503,
+    "cold_ms": 3.665,
+    "steps": 59,
+    "method": "scipy_LSODA"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.557,
+    "cold_ms": 38.909,
+    "steps": 19,
+    "method": "diffeqpy_Rodas5P"
+   },
+   "openmodelica": {
+    "warm_ms": 95.084,
+    "cold_ms": 1093.001,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "Pendulum chain (16)": {
+   "fastsim_compiled": {
+    "warm_ms": 0.215,
+    "cold_ms": 2.238,
+    "steps": 67,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 1.909,
+    "cold_ms": 2.851,
+    "steps": 102,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 277.303,
+    "cold_ms": 281.49,
+    "steps": 102,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 1.909,
+    "cold_ms": 1.943,
+    "steps": 18,
+    "method": "scipy_DOP853"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.062,
+    "cold_ms": 9.846,
+    "steps": 75,
+    "method": "diffeqpy_Tsit5"
+   },
+   "boost_odeint": {
+    "warm_ms": 0.035,
+    "cold_ms": 1922.937,
+    "steps": 65,
+    "method": "boost_odeint"
+   },
+   "openmodelica": {
+    "warm_ms": 83.004,
+    "cold_ms": 1008.145,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "RC ladder (48)": {
+   "fastsim_compiled": {
+    "warm_ms": 0.828,
+    "cold_ms": 4.336,
+    "steps": 209,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 7.002,
+    "cold_ms": 8.855,
+    "steps": 239,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 1051.06,
+    "cold_ms": 1063.96,
+    "steps": 239,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 7.373,
+    "cold_ms": 7.417,
+    "steps": 74,
+    "method": "scipy_DOP853"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.144,
+    "cold_ms": 12.364,
+    "steps": 187,
+    "method": "diffeqpy_Tsit5"
+   },
+   "boost_odeint": {
+    "warm_ms": 0.094,
+    "cold_ms": 1918.842,
+    "steps": 229,
+    "method": "boost_odeint"
+   },
+   "openmodelica": {
+    "warm_ms": 103.481,
+    "cold_ms": 1000.951,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "FPU-alpha chain (16)": {
+   "fastsim_compiled": {
+    "warm_ms": 0.251,
+    "cold_ms": 4.02,
+    "steps": 39,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 1.451,
+    "cold_ms": 3.867,
+    "steps": 56,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 178.18,
+    "cold_ms": 186.027,
+    "steps": 56,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 3.224,
+    "cold_ms": 3.459,
+    "steps": 35,
+    "method": "scipy_RK45"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.046,
+    "cold_ms": 12.999,
+    "steps": 43,
+    "method": "diffeqpy_Tsit5"
+   },
+   "boost_odeint": {
+    "warm_ms": 0.019,
+    "cold_ms": 1923.571,
+    "steps": 43,
+    "method": "boost_odeint"
+   },
+   "openmodelica": {
+    "warm_ms": 84.348,
+    "cold_ms": 1008.129,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "Wave 1D (48)": {
+   "fastsim_compiled": {
+    "warm_ms": 3.701,
+    "cold_ms": 7.255,
+    "steps": 657,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 33.601,
+    "cold_ms": 35.732,
+    "steps": 843,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 5504.945,
+    "cold_ms": 5637.912,
+    "steps": 843,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 22.017,
+    "cold_ms": 22.137,
+    "steps": 172,
+    "method": "scipy_DOP853"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.733,
+    "cold_ms": 15.013,
+    "steps": 715,
+    "method": "diffeqpy_Tsit5"
+   },
+   "boost_odeint": {
+    "warm_ms": 0.435,
+    "cold_ms": 1954.084,
+    "steps": 652,
+    "method": "boost_odeint"
+   },
+   "openmodelica": {
+    "warm_ms": 116.272,
+    "cold_ms": 1033.71,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "FitzHugh-Nagumo ring (24)": {
+   "fastsim_compiled": {
+    "warm_ms": 0.155,
+    "cold_ms": 4.62,
+    "steps": 29,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 1.409,
+    "cold_ms": 4.229,
+    "steps": 34,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 173.307,
+    "cold_ms": 178.235,
+    "steps": 34,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 3.907,
+    "cold_ms": 4.082,
+    "steps": 32,
+    "method": "scipy_RK45"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.032,
+    "cold_ms": 20.49,
+    "steps": 35,
+    "method": "diffeqpy_Tsit5"
+   },
+   "boost_odeint": {
+    "warm_ms": 0.023,
+    "cold_ms": 1931.632,
+    "steps": 35,
+    "method": "boost_odeint"
+   },
+   "openmodelica": {
+    "warm_ms": 90.446,
+    "cold_ms": 1019.046,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "Van der Pol mu=1000": {
+   "fastsim_compiled": {
+    "warm_ms": 6.418,
+    "cold_ms": 7.112,
+    "steps": 1265,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 12.896,
+    "cold_ms": 14.269,
+    "steps": 1350,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 580.703,
+    "cold_ms": 591.18,
+    "steps": 887,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 4.061,
+    "cold_ms": 4.266,
+    "steps": 959,
+    "method": "scipy_LSODA"
+   },
+   "casadi_cvodes": {
+    "warm_ms": 0.741,
+    "cold_ms": 1.165,
+    "steps": 1072,
+    "method": "casadi_cvodes"
+   },
+   "numba": {
+    "warm_ms": 47.796,
+    "cold_ms": 229.051,
+    "steps": 818,
+    "method": "numba_BDF"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.62,
+    "cold_ms": 16.383,
+    "steps": 384,
+    "method": "diffeqpy_Rodas5P"
+   },
+   "openmodelica": {
+    "warm_ms": 82.097,
+    "cold_ms": 888.413,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "Robertson": {
+   "fastsim_compiled": {
+    "warm_ms": 0.949,
+    "cold_ms": 1.447,
+    "steps": 152,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 2.508,
+    "cold_ms": 2.683,
+    "steps": 168,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 125.475,
+    "cold_ms": 128.294,
+    "steps": 101,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 0.578,
+    "cold_ms": 0.7,
+    "steps": 115,
+    "method": "scipy_LSODA"
+   },
+   "casadi_cvodes": {
+    "warm_ms": 0.112,
+    "cold_ms": 0.515,
+    "steps": 130,
+    "method": "casadi_cvodes"
+   },
+   "numba": {
+    "warm_ms": 5.357,
+    "cold_ms": 172.082,
+    "steps": 98,
+    "method": "numba_BDF"
+   },
+   "diffrax": {
+    "warm_ms": 24.685,
+    "cold_ms": 818.312,
+    "steps": 2745,
+    "method": "diffrax_Kvaerno5"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.063,
+    "cold_ms": 30.976,
+    "steps": 41,
+    "method": "diffeqpy_Rodas5P"
+   },
+   "openmodelica": {
+    "warm_ms": 62.713,
+    "cold_ms": 896.78,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "HIRES": {
+   "fastsim_compiled": {
+    "warm_ms": 2.458,
+    "cold_ms": 3.438,
+    "steps": 346,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 21.01,
+    "cold_ms": 21.549,
+    "steps": 468,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 15864.05,
+    "cold_ms": 17159.684,
+    "steps": 861,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 3.353,
+    "cold_ms": 3.8,
+    "steps": 357,
+    "method": "scipy_LSODA"
+   },
+   "casadi_cvodes": {
+    "warm_ms": 0.256,
+    "cold_ms": 0.712,
+    "steps": 252,
+    "method": "casadi_cvodes"
+   },
+   "numba": {
+    "warm_ms": 12.253,
+    "cold_ms": 244.91,
+    "steps": 215,
+    "method": "numba_BDF"
+   },
+   "diffrax": {
+    "warm_ms": 257.994,
+    "cold_ms": 1285.742,
+    "steps": 25425,
+    "method": "diffrax_Kvaerno5"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.287,
+    "cold_ms": 39.586,
+    "steps": 111,
+    "method": "diffeqpy_Rodas5P"
+   }
+  },
+  "Oregonator": {
+   "fastsim_compiled": {
+    "warm_ms": 4.58,
+    "cold_ms": 5.309,
+    "steps": 801,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 10.929,
+    "cold_ms": 12.212,
+    "steps": 813,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 5295.831,
+    "cold_ms": 4689.207,
+    "steps": 934,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 4.005,
+    "cold_ms": 4.24,
+    "steps": 871,
+    "method": "scipy_LSODA"
+   },
+   "casadi_cvodes": {
+    "warm_ms": 0.519,
+    "cold_ms": 0.931,
+    "steps": 704,
+    "method": "casadi_cvodes"
+   },
+   "numba": {
+    "warm_ms": 31.241,
+    "cold_ms": 171.151,
+    "steps": 544,
+    "method": "numba_BDF"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.52,
+    "cold_ms": 21.745,
+    "steps": 326,
+    "method": "diffeqpy_Rodas5P"
+   },
+   "openmodelica": {
+    "warm_ms": 82.43,
+    "cold_ms": 900.495,
+    "steps": 501,
+    "method": "openmodelica"
+   }
+  },
+  "Brusselator-RD (2x16)": {
+   "fastsim_compiled": {
+    "warm_ms": 2.198,
+    "cold_ms": 6.768,
+    "steps": 128,
+    "method": "fastsim_compiled"
+   },
+   "fastsim_blocks": {
+    "warm_ms": 16.369,
+    "cold_ms": 18.41,
+    "steps": 147,
+    "method": "fastsim_blocks"
+   },
+   "pathsim_blocks": {
+    "warm_ms": 8174.967,
+    "cold_ms": 8441.278,
+    "steps": 133,
+    "method": "pathsim_blocks"
+   },
+   "scipy": {
+    "warm_ms": 3.791,
+    "cold_ms": 3.941,
+    "steps": 124,
+    "method": "scipy_LSODA"
+   },
+   "casadi_cvodes": {
+    "warm_ms": 0.143,
+    "cold_ms": 0.839,
+    "steps": 72,
+    "method": "casadi_cvodes"
+   },
+   "numba": {
+    "warm_ms": 3.992,
+    "cold_ms": 254.603,
+    "steps": 67,
+    "method": "numba_BDF"
+   },
+   "diffrax": {
+    "warm_ms": 2128.41,
+    "cold_ms": 5011.099,
+    "steps": 21985,
+    "method": "diffrax_Kvaerno5"
+   },
+   "diffeqpy": {
+    "warm_ms": 0.348,
+    "cold_ms": 42.29,
+    "steps": 34,
+    "method": "diffeqpy_Rodas5P"
+   }
+  }
+ },
+ "stiff": [
+  "Flame",
+  "Van der Pol array (12)",
+  "Allen-Cahn 1D (64)",
+  "Van der Pol mu=1000",
+  "Robertson",
+  "HIRES",
+  "Oregonator",
+  "Brusselator-RD (2x16)"
+ ]
+}

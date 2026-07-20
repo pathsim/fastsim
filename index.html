@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" type="image/png" href="./favicon.png" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>FastSim: High Performance Rust System Simulation Engine</title>
+		<meta name="description" content="FastSim is a high performance Rust simulation engine. Drop-in replacement for PathSim with 50-100x speedup. Same Python API, powered by Rust." />
+		<meta property="og:type" content="website" />
+		<meta property="og:title" content="FastSim: High Performance Rust System Simulation Engine" />
+		<meta property="og:description" content="Drop-in replacement for PathSim with 50-100x speedup. Same Python API, powered by Rust." />
+		<meta property="og:image" content="./fastsim_logo.png" />
+		<meta name="twitter:card" content="summary_large_image" />
+		<meta name="twitter:title" content="FastSim: High Performance Rust System Simulation Engine" />
+		<meta name="twitter:description" content="Drop-in replacement for PathSim with 50-100x speedup. Same Python API, powered by Rust." />
+		<script type="application/ld+json">
+		{
+			"@context": "https://schema.org",
+			"@type": "SoftwareApplication",
+			"name": "FastSim",
+			"applicationCategory": "Scientific Software",
+			"operatingSystem": "Cross-platform",
+			"programmingLanguage": ["Rust", "Python"],
+			"description": "A high performance Rust simulation engine for dynamical systems. Drop-in replacement for PathSim.",
+			"author": { "@type": "Person", "name": "Milan Rother", "url": "https://milanrother.com" }
+		}
+		</script>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+		<link href="./_app/immutable/entry/start.YcCGP77m.js" rel="modulepreload">
+		<link href="./_app/immutable/chunks/DoSq5-Ta.js" rel="modulepreload">
+		<link href="./_app/immutable/chunks/CDf0Dw2P.js" rel="modulepreload">
+		<link href="./_app/immutable/chunks/BIx-yUa6.js" rel="modulepreload">
+		<link href="./_app/immutable/entry/app.B4L87YJ2.js" rel="modulepreload">
+		<link href="./_app/immutable/chunks/bmWaKKJm.js" rel="modulepreload">
+		<link href="./_app/immutable/chunks/C9GUEExa.js" rel="modulepreload">
+		<link href="./_app/immutable/chunks/DWvdnCZS.js" rel="modulepreload">
+		<link href="./_app/immutable/nodes/0.VXan3XsY.js" rel="modulepreload">
+		<link href="./_app/immutable/chunks/GEMKcbGv.js" rel="modulepreload">
+		<link href="./_app/immutable/chunks/CRo9MzCJ.js" rel="modulepreload">
+		<link href="./_app/immutable/nodes/2.hsUfcdho.js" rel="modulepreload">
+		<link href="./_app/immutable/chunks/C_zzwPAZ.js" rel="modulepreload">
+		<!--1uha8ag--><meta name="description" content="FastSim is a high-performance Rust-based block-diagram system simulation engine. Drop-in replacement for PathSim with 50-100x speedup and C99 code generation for embedded deployment." class="svelte-1uha8ag"/><!----><title>FastSim: High Performance Rust System Simulation Engine</title>
+		<link href="./_app/immutable/assets/config.DIJKJuz7.css" rel="stylesheet">
+		<link href="./_app/immutable/assets/Icon.BnehBd6Q.css" rel="stylesheet">
+		<link href="./_app/immutable/assets/0.BR_SrVaR.css" rel="stylesheet">
+		<link href="./_app/immutable/assets/2.m5L5aDTQ.css" rel="stylesheet">
+		<!-- whatsmytraffic Analytics -->
+		<script defer src="https://whatsmytraffic.com/beacon.js" data-website-id="99416624-18df-4b2d-8908-e0cf9d6ec57e"></script>
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents"><!--[--><!--[0--><!--[--><a href="#main-content" class="skip-link">Skip to main content</a> <!--[-1--><!--]--><!----> <div class="app svelte-12qhfyh"><header class="svelte-hv3zzy"><div class="header-content svelte-hv3zzy"><div class="header-left svelte-hv3zzy"><a href="/" class="icon-btn"><!--[40--><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svelte-1995lsr"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg><!--]--><!----></a></div> <nav class="header-right svelte-hv3zzy"><a href="https://github.com/pathsim" class="icon-btn"><!--[67--><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="svelte-1995lsr"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"></path></svg><!--]--><!----></a> <a href="https://pathsim.org" class="icon-btn"><!--[70--><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svelte-1995lsr"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg><!--]--><!----></a> <button class="icon-btn"><!--[49--><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svelte-1995lsr"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg><!--]--><!----></button></nav></div></header><!----> <main id="main-content" class="svelte-12qhfyh"><!--[--><main class="svelte-1uha8ag"><section class="hero svelte-1uha8ag"><div class="hero-content svelte-1uha8ag"><div class="hero-logo-wrap svelte-1uha8ag"><img src="./fastsim_logo.png" alt="FastSim" class="hero-logo svelte-1uha8ag"/></div> <h1 class="tagline svelte-1uha8ag">Simulate 100× faster. Deploy as C.</h1> <p class="description svelte-1uha8ag">Drop-in replacement for PathSim: the same Python API on a Rust engine that JIT-compiles your models, and lowers them to dependency-free C99 for embedded targets, with fixed-point, A2L calibration maps and software-in-the-loop verification built in.</p> <div class="hero-actions svelte-1uha8ag"><a href="#contact" class="action-card svelte-1uha8ag"><!--[78--><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svelte-1995lsr"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg><!--]--><!----> <span class="action-label svelte-1uha8ag">Commercial license</span></a> <a href="/editor/" rel="external" class="action-card svelte-1uha8ag"><!--[12--><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svelte-1995lsr"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg><!--]--><!----> <span class="action-label svelte-1uha8ag">Editor</span></a> <a href="https://docs.pathsim.org" class="action-card svelte-1uha8ag"><!--[41--><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svelte-1995lsr"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg><!--]--><!----> <span class="action-label svelte-1uha8ag">Docs</span></a> <a href="https://milanrother.com/#services" class="action-card svelte-1uha8ag"><!--[43--><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svelte-1995lsr"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg><!--]--><!----> <span class="action-label svelte-1uha8ag">Consulting</span></a> <a href="mailto:info@pathsim.org" class="action-card svelte-1uha8ag"><!--[32--><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svelte-1995lsr"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><circle cx="12" cy="8" r="1" fill="currentColor" stroke="none"></circle></svg><!--]--><!----> <span class="action-label svelte-1uha8ag">Support</span></a></div></div> <div class="hero-visual svelte-1uha8ag"><div class="hero-code elevated svelte-1uha8ag"><!--[-1--><div class="code-panel"><div class="panel-header"><span>Example</span> <div class="header-actions svelte-1vh2k24"><!--[-1--><!--]--> <button class="icon-btn"><!--[2--><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svelte-1995lsr"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg><!--]--><!----></button></div></div> <div class="hl-scroll svelte-1vh2k24"><pre class="hl-gutter svelte-1vh2k24" aria-hidden="true">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18</pre> <pre class="hl svelte-1vh2k24"><code class="svelte-1vh2k24"><!----><span class="tok-keyword">from</span> <span class="tok-variableName">fastsim</span> <span class="tok-keyword">import</span> <span class="tok-variableName">Simulation</span><span class="tok-punctuation">,</span> <span class="tok-variableName">Connection</span>
+<span class="tok-keyword">from</span> <span class="tok-variableName">fastsim</span><span class="tok-operator">.</span><span class="tok-variableName">blocks</span> <span class="tok-keyword">import</span> <span class="tok-variableName">Integrator</span><span class="tok-punctuation">,</span> <span class="tok-variableName">Amplifier</span><span class="tok-punctuation">,</span> <span class="tok-variableName">Scope</span>
+
+<span class="tok-comment"># blocks</span>
+<span class="tok-variableName">integ</span> <span class="tok-operator">=</span> <span class="tok-variableName">Integrator</span><span class="tok-punctuation">(</span><span class="tok-number">1.0</span><span class="tok-punctuation">)</span>
+<span class="tok-variableName">amp</span> <span class="tok-operator">=</span> <span class="tok-variableName">Amplifier</span><span class="tok-punctuation">(</span><span class="tok-operator">-</span><span class="tok-number">0.5</span><span class="tok-punctuation">)</span>
+<span class="tok-variableName">scope</span> <span class="tok-operator">=</span> <span class="tok-variableName">Scope</span><span class="tok-punctuation">(</span><span class="tok-punctuation">)</span>
+
+<span class="tok-comment"># connections (feedback loop)</span>
+<span class="tok-variableName">connections</span> <span class="tok-operator">=</span> <span class="tok-punctuation">[</span>
+    <span class="tok-variableName">Connection</span><span class="tok-punctuation">(</span><span class="tok-variableName">integ</span><span class="tok-punctuation">,</span> <span class="tok-variableName">amp</span><span class="tok-punctuation">,</span> <span class="tok-variableName">scope</span><span class="tok-punctuation">)</span><span class="tok-punctuation">,</span>
+    <span class="tok-variableName">Connection</span><span class="tok-punctuation">(</span><span class="tok-variableName">amp</span><span class="tok-punctuation">,</span> <span class="tok-variableName">integ</span><span class="tok-punctuation">)</span>
+<span class="tok-punctuation">]</span>
+
+<span class="tok-comment"># simulate (50-100x faster than PathSim)</span>
+<span class="tok-variableName">sim</span> <span class="tok-operator">=</span> <span class="tok-variableName">Simulation</span><span class="tok-punctuation">(</span><span class="tok-punctuation">[</span><span class="tok-variableName">integ</span><span class="tok-punctuation">,</span> <span class="tok-variableName">amp</span><span class="tok-punctuation">,</span> <span class="tok-variableName">scope</span><span class="tok-punctuation">]</span><span class="tok-punctuation">,</span> <span class="tok-variableName">connections</span><span class="tok-punctuation">)</span>
+<span class="tok-variableName">sim</span><span class="tok-operator">.</span><span class="tok-propertyName">run</span><span class="tok-punctuation">(</span><span class="tok-number">10.0</span><span class="tok-punctuation">)</span>
+<span class="tok-variableName">time</span><span class="tok-punctuation">,</span> <span class="tok-punctuation">[</span><span class="tok-variableName">x</span><span class="tok-punctuation">]</span> <span class="tok-operator">=</span> <span class="tok-variableName">scope</span><span class="tok-operator">.</span><span class="tok-propertyName">read</span><span class="tok-punctuation">(</span><span class="tok-punctuation">)</span><!----></code></pre></div><!----></div><!--]--><!----></div></div></section> <div class="separator svelte-1uha8ag"></div> <section class="prose-section svelte-1uha8ag" id="ecosystem"><h2 class="svelte-1uha8ag">One API, two engines</h2> <p class="svelte-1uha8ag">FastSim is the proprietary production build of the PathSim API: models
+			written against PathSim run unchanged, but the simulation core and the
+			numeric hot path execute entirely in compiled Rust. It is free for
+			noncommercial use under the PolyForm Noncommercial license; commercial
+			use needs a <a href="#contact" class="svelte-1uha8ag">commercial license</a>.</p> <div class="eco-grid svelte-1uha8ag"><a href="https://pathsim.org" class="eco-card elevated svelte-1uha8ag"><div class="eco-head svelte-1uha8ag"><!--[70--><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svelte-1995lsr"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg><!--]--><!----> <span class="eco-name svelte-1uha8ag">PathSim</span> <span class="eco-tag svelte-1uha8ag">open source</span></div> <p class="eco-desc svelte-1uha8ag">The MIT-licensed Python reference. Readable, hackable, minimal
+					dependencies. Built for learning, research and small models.</p></a> <div class="eco-card elevated active svelte-1uha8ag"><div class="eco-head svelte-1uha8ag"><!--[11--><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svelte-1995lsr"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg><!--]--><!----> <span class="eco-name svelte-1uha8ag">FastSim</span> <span class="eco-tag svelte-1uha8ag">commercial</span></div> <p class="eco-desc svelte-1uha8ag">The same API on a Rust engine: 50 to 100 times faster,
+					JIT-compiled callbacks, DAE and periodic steady-state solvers,
+					native FMI, and a C code generator for embedded deployment.</p></div></div></section> <div class="separator svelte-1uha8ag"></div> <section class="performance svelte-1uha8ag"><h2 class="svelte-1uha8ag">Performance</h2> <div class="perf-rotator svelte-1uha8ag"><div class="perf-card elevated active svelte-1uha8ag"><div class="perf-card-inner svelte-1uha8ag"><div class="panel-header perf-card-header svelte-1uha8ag"><span class="svelte-1uha8ag">FastSim across the tooling landscape</span> <button class="perf-toggle svelte-1uha8ag"><span class="toggle-label svelte-1uha8ag active">Warm</span> <span class="toggle-track svelte-1uha8ag"><span class="toggle-thumb svelte-1uha8ag"></span></span> <span class="toggle-label svelte-1uha8ag">Cold</span></button></div> <div class="panel-body perf-card-body svelte-1uha8ag"><p class="perf-desc svelte-1uha8ag">Cost per integration step across 15 dynamical systems against every tool: FastSim (compiled + per-block), PathSim, OpenModelica, boost::odeint, CasADi/CVODES, SciPy, Diffrax and Numba. A missing marker means the tool cannot express that system (an explicit stepper on a stiff problem, a right-hand side it cannot compile). <strong class="svelte-1uha8ag">Warm</strong> is steady-state cost; <strong class="svelte-1uha8ag">Cold</strong> includes one-off compile/JIT. Same model, solver class and tolerances throughout. Lower is better.</p> <div class="plotly-chart landscape-chart svelte-1uha8ag"></div></div></div></div></div></section> <div class="separator svelte-1uha8ag"></div> <section class="group-head svelte-1uha8ag" id="simulate"><span class="group-kicker svelte-1uha8ag">01</span> <h2 class="group-title svelte-1uha8ag">Simulate</h2> <p class="group-lede svelte-1uha8ag">Everything PathSim runs, at Rust-native speed, plus solver capabilities
+			that have no open-source equivalent: JIT-compiled callbacks with symbolic
+			Jacobians, first-class index-1 DAEs, direct periodic steady-state, and
+			FMI 3.0 implemented natively in the engine.</p></section> <section class="prose-section svelte-1uha8ag" id="jit"><h2 class="svelte-1uha8ag">JIT compilation</h2> <p class="svelte-1uha8ag">FastSim ships its own NumPy-compatible symbolic tracer. User-supplied
+			Python callbacks get traced lazily the first time they run: the
+			right-hand side of an <code class="svelte-1uha8ag">ODE</code>, the algebraic law of a <code class="svelte-1uha8ag">Function</code>, the output of a <code class="svelte-1uha8ag">Source</code>, the
+			dynamics and outputs of a <code class="svelte-1uha8ag">DynamicalSystem</code>. Every
+			arithmetic operation, every NumPy ufunc, every <code class="svelte-1uha8ag">np.stack</code>, <code class="svelte-1uha8ag">np.sum</code>, <code class="svelte-1uha8ag">np.where</code> or <code class="svelte-1uha8ag">@</code> on the
+			symbolic inputs records a node into an SSA graph. A pipeline of
+			optimization passes (constant folding, CSE, algebraic identities,
+			FMA fusion, dead-code elimination) simplifies the graph, which is
+			then lowered into a flat Rust tape the simulation evaluates directly.</p> <p class="svelte-1uha8ag">Once the trace succeeds, the Python interpreter is no longer involved
+			inside the integration loop. Callbacks execute at Rust-native speed
+			with no marshaling, no GIL, no per-op NumPy dispatch. The same graph
+			is also differentiated symbolically to produce an analytical Jacobian
+			that implicit solvers like <code class="svelte-1uha8ag">ESDIRK43</code> consume for their
+			Newton stage solve. Tracing covers every block that takes a
+			user-supplied function: <code class="svelte-1uha8ag">ODE</code>, <code class="svelte-1uha8ag">Function</code>, <code class="svelte-1uha8ag">Source</code>, <code class="svelte-1uha8ag">DynamicalSystem</code>, <code class="svelte-1uha8ag">DynamicalFunction</code>, <code class="svelte-1uha8ag">Wrapper</code>, <code class="svelte-1uha8ag">MassMatrixDAE</code>, <code class="svelte-1uha8ag">SemiExplicitDAE</code>, and <code class="svelte-1uha8ag">FullyImplicitDAE</code>. If a callback uses something the
+			tracer can't lower, that single block falls back to Python while the
+			rest of the simulation keeps running native.</p> <!--[-1--><!--]--><!----></section> <div class="separator svelte-1uha8ag"></div> <section class="prose-section svelte-1uha8ag" id="dae"><h2 class="svelte-1uha8ag">Differential-algebraic equations</h2> <p class="svelte-1uha8ag">FastSim treats index-1 DAEs as first-class blocks in three canonical forms.
+			The <code class="svelte-1uha8ag">SemiExplicitDAE</code> block takes a system split into differential
+			and algebraic parts and reduces it to a pure ODE by solving the algebraic
+			constraint with an inner Newton iteration at every right-hand side evaluation,
+			which means any of the 21 solvers can integrate it, including explicit ones. <code class="svelte-1uha8ag">MassMatrixDAE</code> covers the case where a constant mass matrix
+			multiplies the derivative vector, with zero rows allowed so that physical
+			conservation laws can enter the model directly. <code class="svelte-1uha8ag">FullyImplicitDAE</code> accepts the general residual and requires an implicit solver. All three
+			blocks feed their analytical Jacobians to the stage solver when the user
+			callback is traceable, which is what keeps the preconditioned Anderson
+			acceleration fast.</p> <!--[-1--><!--]--><!----></section> <div class="separator svelte-1uha8ag"></div> <section class="prose-section svelte-1uha8ag" id="pss"><h2 class="svelte-1uha8ag">Periodic steady state</h2> <p class="svelte-1uha8ag">FastSim finds the periodic limit cycle of a driven system directly
+			via matrix-free Anderson-accelerated shooting on the period map <code class="svelte-1uha8ag">g(x₀) = x(T; x₀)</code>. <code class="svelte-1uha8ag">sim.periodic_steady_state(period, ...)</code> integrates one period with the inner ODE solver of your choice
+			(explicit, implicit, multistep, DAE-extended), then runs a per-block
+			Anderson step that nudges <code class="svelte-1uha8ag">x₀</code> toward the fixed point.
+			No monodromy matrix is assembled or factorized; only function
+			evaluations. Convergence uses the same WRMS-scaled <code class="svelte-1uha8ag">NLS_COEF</code> threshold every implicit-stage solver in
+			FastSim does, so tolerances carry over from transient runs without
+			retuning. Pays off when settling time exceeds roughly ten forcing
+			periods: high-Q resonators, weakly-damped loops, large LC filters.</p> <!--[-1--><!--]--><!----></section> <div class="separator svelte-1uha8ag"></div> <section class="prose-section svelte-1uha8ag"><h2 class="svelte-1uha8ag">Native FMI 3.0</h2> <p class="svelte-1uha8ag">FastSim implements the FMI 3.0 standard directly in Rust. <code class="svelte-1uha8ag">ModelExchangeFMU</code> exposes the FMU's derivative function as a
+			block right-hand side that the solver integrates alongside everything else,
+			with event indicators translating into <code class="svelte-1uha8ag">ZeroCrossing</code> events and
+			FMU-announced time events populating a <code class="svelte-1uha8ag">ScheduleList</code>. <code class="svelte-1uha8ag">CoSimulationFMU</code> runs the FMU on a fixed communication grid,
+			scheduled through a block-internal event, and the full event-mode handshake
+			runs whenever the FMU signals an event. The FMU behaves like any other block
+			in the graph.</p> <!--[-1--><!--]--><!----></section> <div class="separator svelte-1uha8ag"></div> <section class="group-head svelte-1uha8ag" id="verify"><span class="group-kicker svelte-1uha8ag">02</span> <h2 class="group-title svelte-1uha8ag">Inspect &amp; verify</h2> <p class="group-lede svelte-1uha8ag">A model is an asset: capture it, diff it, hand it to other tools, and
+			prove that what runs matches what you built. The intermediate
+			representation is the substrate, and verification closes the loop.</p></section> <section class="prose-section svelte-1uha8ag" id="ir"><h2 class="svelte-1uha8ag">Intermediate representation</h2> <p class="svelte-1uha8ag">Every FastSim model has a second life as a typed, serializable
+			intermediate representation. <code class="svelte-1uha8ag">sim.to_ir()</code> walks the live
+			simulation and atomizes each block down to scalar SSA operations,
+			producing a hierarchical <code class="svelte-1uha8ag">Module</code> that preserves subsystem
+			structure, connections, parameters, and block-internal events. The IR
+			round-trips losslessly through JSON, so a model can be captured, stored,
+			diffed, or handed to another tool, and it is the substrate FastSim uses
+			for <a href="#deploy" class="svelte-1uha8ag">code generation</a> and cross-engine verification
+			rather than a separate hand-written export.</p> <p class="svelte-1uha8ag">The same op graph also powers compilation. <code class="svelte-1uha8ag">subsystem.compile()</code> fuses an entire subsystem into a single native block with its own fused <code class="svelte-1uha8ag">dx/dt</code> tape, a symbolic Jacobian built from that tape, and any
+			internal events captured and replayed, then drops back into a normal
+			simulation like any other block. <code class="svelte-1uha8ag">sim.compile()</code> takes it one
+			step further and fuses a whole model into one tape over a global state
+			vector. The block boundaries you design stay intact for authoring and
+			introspection; compilation collapses them only where it pays off.</p> <!--[-1--><!--]--><!----></section> <div class="separator svelte-1uha8ag"></div> <section class="group-head svelte-1uha8ag" id="deploy"><span class="group-kicker svelte-1uha8ag">03</span> <h2 class="group-title svelte-1uha8ag">Deploy</h2> <p class="group-lede svelte-1uha8ag">The same model that runs in Python lowers to self-contained C99:
+			reentrant, allocation-free, libm only, ready for firmware builds,
+			HIL rigs and ECUs, with calibration and verification tooling around it.</p></section> <section class="prose-section svelte-1uha8ag" id="codegen"><h2 class="svelte-1uha8ag">C code generation</h2> <p class="svelte-1uha8ag"><code class="svelte-1uha8ag">sim.to_c(name)</code> emits the whole model as portable C99 with
+			no dependencies beyond <code class="svelte-1uha8ag">libm</code>: no allocation, no threads, no
+			globals. One instance struct holds all state, so the code is reentrant
+			by construction, and every state, output and tunable parameter is
+			addressable through a stable <code class="svelte-1uha8ag">SIG_*</code> inventory. Wire <code class="svelte-1uha8ag">&lt;name>_step</code> into a timer ISR or RTOS task and the
+			cost per call is one fixed-stage RK step, statically bounded, with
+			discrete events firing inside the step exactly as they do in
+			simulation. <code class="svelte-1uha8ag">scaffold=True</code> adds a CMake build and a demo
+			driver; <code class="svelte-1uha8ag">trace=True</code> emits a machine-readable model-to-code
+			map with static RAM, stack and per-step op metrics for CI size gates.</p> <p class="svelte-1uha8ag">For targets without an FPU, <code class="svelte-1uha8ag">numeric="q16.16"</code> lowers the
+			entire model to integer-only arithmetic in a global Q format: defined
+			wrap semantics, explicit scale handling, LUT-based nonlinearities. <code class="svelte-1uha8ag">a2l=True</code> emits an ASAP2 calibration description for XCP
+			tooling (CANape, INCA), generated from the same plan as the C so names
+			and offsets agree by construction. And <code class="svelte-1uha8ag">sim.verify_c()</code> closes the loop: it compiles the emitted C with your local toolchain,
+			integrates it against the reference engine over the same trajectory,
+			and reports the worst scaled state error. Software-in-the-loop parity
+			in one call.</p> <!--[-1--><!--]--><!----></section> <div class="separator svelte-1uha8ag"></div> <section class="contact svelte-1uha8ag" id="contact"><div class="contact-text svelte-1uha8ag"><h2 class="svelte-1uha8ag">Commercial license</h2> <p class="contact-lede svelte-1uha8ag">FastSim is free under the PolyForm Noncommercial license for research,
+				teaching and personal projects. Using it, or its generated C code, in a
+				commercial product needs a commercial license. Tell us about your use
+				case and we’ll get back to you.</p></div> <div class="contact-form svelte-1uha8ag"><form class="nf svelte-1icf7zh" novalidate=""><!--[-1--><div class="nf-row svelte-1icf7zh"><input type="email" name="email" placeholder="you@company.com" value="" required="" autocomplete="email" class="nf-input svelte-1icf7zh" aria-label="Email address"/></div> <textarea name="message" placeholder="Tell us about your use case (company, product, scale)." required="" rows="2" class="nf-textarea svelte-1icf7zh" aria-label="Message"></textarea> <div class="nf-actions svelte-1icf7zh"><span class="nf-note svelte-1icf7zh">We use your details only to answer this enquiry. See the <a href="/datenschutz" target="_blank" rel="noopener" class="svelte-1icf7zh">privacy policy</a>.</span> <button type="submit" class="nf-submit svelte-1icf7zh" disabled=""><!--[-1-->Send request<!--]--></button></div> <!--[-1--><!--]--><!--]--></form><!----></div></section> <div class="separator svelte-1uha8ag"></div> <footer class="footer svelte-1uha8ag"><div class="footer-links svelte-1uha8ag"><a href="https://github.com/pathsim" class="svelte-1uha8ag">GitHub</a> <span class="footer-dot svelte-1uha8ag">·</span> <a href="https://pathsim.org" class="svelte-1uha8ag">PathSim</a> <span class="footer-dot svelte-1uha8ag">·</span> <a href="./impressum" class="svelte-1uha8ag">Impressum</a> <span class="footer-dot svelte-1uha8ag">·</span> <a href="./datenschutz" class="svelte-1uha8ag">Datenschutz</a></div> <p class="footer-copy svelte-1uha8ag">© 2026 Milan Rother · Proprietary</p></footer></main><!--]--><!----></main></div><!--]--><!--]--> <!--[-1--><!--]--><!--]-->
+			
+			<script>
+				{
+					__sveltekit_bxqv6i = {
+						base: new URL(".", location).pathname.slice(0, -1)
+					};
+
+					const element = document.currentScript.parentElement;
+
+					Promise.all([
+						import("./_app/immutable/entry/start.YcCGP77m.js"),
+						import("./_app/immutable/entry/app.B4L87YJ2.js")
+					]).then(([kit, app]) => {
+						kit.start(app, element, {
+							node_ids: [0, 2],
+							data: [null,null],
+							form: null,
+							error: null
+						});
+					});
+				}
+			</script>
+		</div>
+	</body>
+</html>
