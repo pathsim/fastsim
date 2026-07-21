@@ -445,14 +445,15 @@ impl Schedule {
                 }
             }
 
-            // Minimal tear set: the smallest set of connections whose removal
-            // makes this SCC acyclic. For small SCCs this is the *exact* minimum
-            // (subset enumeration by ascending size); larger SCCs fall back to a
-            // DFS back-edge feedback arc set. Tearing the fewest connections
-            // minimizes the number of loop-closing residuals (ConnectionBoosters)
-            // the algebraic-loop solver must drive to zero.
+            // Tear set: the Eades--Lin--Smyth feedback connection set whose
+            // removal makes this SCC acyclic. Each cut connection becomes one
+            // loop-closing residual (ConnectionBooster) the algebraic-loop solver
+            // drives to zero; a smaller set means fewer residuals. It is the
+            // single tearing path in the engine — deterministic, near-minimal, and
+            // free of the forward-chord over-cutting a plain DFS back-edge scan can
+            // hit (see `els_feedback_conns`).
             let torn: std::collections::HashSet<usize> =
-                min_feedback_conns(scc, self.n_blocks, &sn).into_iter().collect();
+                els_feedback_conns(scc, self.n_blocks, &sn).into_iter().collect();
 
             // Longest-path local depth on the torn (acyclic) DAG: a block sits one
             // level below its deepest non-torn intra-SCC predecessor.
@@ -682,155 +683,133 @@ impl Schedule {
 
 }
 
-/// Exact-minimum feedback connection set for a single algebraic-loop SCC: the
-/// smallest set of connection ids whose removal makes the SCC acyclic. Tearing
-/// the fewest connections minimizes the number of loop-closing residuals
-/// (ConnectionBoosters) the algebraic-loop solver has to drive to zero, and it
-/// keeps the torn remainder a valid DAG for depth layering.
+/// Feedback connection set for one algebraic-loop SCC — the single tearing path,
+/// the Eades--Lin--Smyth greedy heuristic for the feedback arc set problem
+/// (Eades, Lin, Smyth 1993). It builds a linear vertex ordering by repeatedly
+/// peeling sinks to the back and sources to the front, and, when only a cyclic
+/// core remains, moving the vertex of maximum out\,--\,in degree to the front;
+/// the torn connections are exactly those with an arc that runs backward in that
+/// ordering (a self-loop always counts).
+///
+/// Unlike a plain DFS back-edge scan, the result is independent of any traversal
+/// start order and never over-cuts a forward chord (on `a\to b\to c\to a` with
+/// chord `a\to c` it cuts the single arc `c\to a`, the true minimum). It is not
+/// guaranteed to be of absolute minimum size on adversarial graphs, but it is
+/// near-minimal, `O(V+E)`-ish (an `O(m^2)` fallback only over the max-degree
+/// picks, and loop SCCs are small), and deterministic. Tearing is always a valid
+/// feedback set — the torn remainder is a DAG ready for depth layering — and a
+/// larger set only costs a few extra loop-closing residuals, never a wrong
+/// result: the algebraic loop converges to the same fixed point regardless of
+/// which arcs are torn.
 ///
 /// `sn[b]` lists block `b`'s deduped intra-SCC `(tgt, conn_id)` successor edges.
-/// When the SCC has at most [`crate::constants::TEAR_EXACT_MAX_CONNS`] distinct
-/// connections this enumerates connection subsets by ascending size (Gosper's
-/// hack) and returns the first whose removal breaks every cycle, i.e. the exact
-/// minimum. Larger SCCs fall back to [`dfs_back_edge_conns`] (a valid feedback
-/// arc set, not guaranteed minimum) to stay within the `O(2^c)` budget.
-fn min_feedback_conns(scc: &[NodeId], n_blocks: usize, sn: &[Vec<(NodeId, usize)>]) -> Vec<usize> {
-    // Remap SCC blocks to dense local indices so the cycle check works on
-    // arrays sized by the SCC, not the whole block count.
+fn els_feedback_conns(scc: &[NodeId], n_blocks: usize, sn: &[Vec<(NodeId, usize)>]) -> Vec<usize> {
     let m = scc.len();
+    if m == 0 {
+        return Vec::new();
+    }
+    // Dense local indices for the SCC.
     let mut local = vec![usize::MAX; n_blocks];
     for (i, &b) in scc.iter().enumerate() {
         local[b] = i;
     }
 
-    // Distinct intra-SCC connections (bit positions) and local edge list.
-    let mut conns: Vec<usize> = Vec::new();
-    let mut edges: Vec<(usize, usize, usize)> = Vec::new(); // (lsrc, ltgt, bit)
+    // Local in/out adjacency plus the (src, tgt, conn) edge list.
+    let mut out_adj: Vec<Vec<usize>> = vec![Vec::new(); m];
+    let mut in_adj: Vec<Vec<usize>> = vec![Vec::new(); m];
+    let mut edges: Vec<(usize, usize, usize)> = Vec::new();
     for &b in scc {
+        let lb = local[b];
         for &(tgt, cid) in &sn[b] {
-            let bit = match conns.iter().position(|&x| x == cid) {
-                Some(i) => i,
-                None => {
-                    conns.push(cid);
-                    conns.len() - 1
-                }
-            };
-            edges.push((local[b], local[tgt], bit));
+            let lt = local[tgt];
+            out_adj[lb].push(lt);
+            in_adj[lt].push(lb);
+            edges.push((lb, lt, cid));
         }
     }
-    let c = conns.len();
-    if c == 0 {
-        return Vec::new();
-    }
 
-    if c <= crate::constants::TEAR_EXACT_MAX_CONNS {
-        // Enumerate connection subsets by ascending size; the first acyclic one
-        // is an exact-minimum feedback connection set. `k == c` (remove all
-        // edges) is always acyclic, so the loop always returns.
-        for k in 0..=c {
-            if k == 0 {
-                if is_acyclic_local(m, &edges, 0) {
-                    return Vec::new();
-                }
-                continue;
-            }
-            let mut mask: u32 = (1u32 << k) - 1;
-            let limit: u32 = 1u32 << c;
-            while mask < limit {
-                if is_acyclic_local(m, &edges, mask) {
-                    return (0..c).filter(|&i| mask & (1 << i) != 0).map(|i| conns[i]).collect();
-                }
-                // Gosper's hack: next integer with the same popcount.
-                let lowest = mask & mask.wrapping_neg();
-                let ripple = mask + lowest;
-                mask = (((mask ^ ripple) >> 2) / lowest) | ripple;
+    let mut outdeg: Vec<usize> = out_adj.iter().map(|a| a.len()).collect();
+    let mut indeg: Vec<usize> = in_adj.iter().map(|a| a.len()).collect();
+    let mut removed = vec![false; m];
+    let mut pos = vec![0usize; m]; // position of each vertex in the final ordering
+    let mut left = 0usize; // next slot from the front (source side)
+    let mut right = m; // next slot from the back (sink side), exclusive
+    let mut remaining = m;
+
+    // Remove a vertex and update its live neighbours' degrees.
+    fn drop_vertex(
+        u: usize,
+        removed: &mut [bool],
+        indeg: &mut [usize],
+        outdeg: &mut [usize],
+        out_adj: &[Vec<usize>],
+        in_adj: &[Vec<usize>],
+    ) {
+        removed[u] = true;
+        for &v in &out_adj[u] {
+            if !removed[v] {
+                indeg[v] -= 1;
             }
         }
-        // Unreachable (k == c removes every edge), but stay total.
-        return conns;
-    }
-
-    dfs_back_edge_conns(scc, n_blocks, sn)
-}
-
-/// Is the SCC acyclic once the connections selected by `removed_mask` are cut?
-/// `edges` are `(local_src, local_tgt, bit)` over `0..m` local block indices;
-/// an edge is active iff its `bit` is clear in `removed_mask`. Iterative
-/// white/gray/black DFS over the `m` local nodes.
-fn is_acyclic_local(m: usize, edges: &[(usize, usize, usize)], removed_mask: u32) -> bool {
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); m];
-    for &(s, t, bit) in edges {
-        if removed_mask & (1 << bit) == 0 {
-            adj[s].push(t);
+        for &w in &in_adj[u] {
+            if !removed[w] {
+                outdeg[w] -= 1;
+            }
         }
     }
-    const WHITE: u8 = 0;
-    const GRAY: u8 = 1;
-    const BLACK: u8 = 2;
-    let mut color = vec![WHITE; m];
-    let mut stack: Vec<(usize, usize)> = Vec::new();
-    for root in 0..m {
-        if color[root] != WHITE {
-            continue;
+
+    while remaining > 0 {
+        // Peel sinks (to the back) and sources (to the front) until neither
+        // remains; a self-loop keeps its vertex off both, so it never peels.
+        let mut progressed = true;
+        while progressed {
+            progressed = false;
+            for u in 0..m {
+                if !removed[u] && outdeg[u] == 0 {
+                    right -= 1;
+                    pos[u] = right;
+                    drop_vertex(u, &mut removed, &mut indeg, &mut outdeg, &out_adj, &in_adj);
+                    remaining -= 1;
+                    progressed = true;
+                }
+            }
+            for u in 0..m {
+                if !removed[u] && indeg[u] == 0 {
+                    pos[u] = left;
+                    left += 1;
+                    drop_vertex(u, &mut removed, &mut indeg, &mut outdeg, &out_adj, &in_adj);
+                    remaining -= 1;
+                    progressed = true;
+                }
+            }
         }
-        color[root] = GRAY;
-        stack.push((root, 0));
-        while let Some(&(blk, ci)) = stack.last() {
-            if ci < adj[blk].len() {
-                stack.last_mut().unwrap().1 += 1;
-                let t = adj[blk][ci];
-                match color[t] {
-                    GRAY => return false, // edge to a stack ancestor -> cycle
-                    WHITE => {
-                        color[t] = GRAY;
-                        stack.push((t, 0));
+        // Cyclic core left: move the max (outdeg - indeg) vertex to the front.
+        // Ties break on the lowest local index, so the result is deterministic.
+        if remaining > 0 {
+            let mut best = usize::MAX;
+            let mut best_delta = i64::MIN;
+            for u in 0..m {
+                if !removed[u] {
+                    let delta = outdeg[u] as i64 - indeg[u] as i64;
+                    if delta > best_delta {
+                        best_delta = delta;
+                        best = u;
                     }
-                    _ => {}
                 }
-            } else {
-                color[blk] = BLACK;
-                stack.pop();
             }
+            pos[best] = left;
+            left += 1;
+            drop_vertex(best, &mut removed, &mut indeg, &mut outdeg, &out_adj, &in_adj);
+            remaining -= 1;
         }
     }
-    true
-}
 
-/// DFS back-edge feedback connection set for large SCCs: a connection is torn
-/// iff one of its edges points to a block still on the DFS stack (a gray
-/// ancestor). Only true back-edges are cut, so the result is a valid feedback
-/// arc set (the remainder is a DAG) though not necessarily of minimum size.
-fn dfs_back_edge_conns(scc: &[NodeId], n_blocks: usize, sn: &[Vec<(NodeId, usize)>]) -> Vec<usize> {
-    const WHITE: u8 = 0;
-    const GRAY: u8 = 1;
-    const BLACK: u8 = 2;
-    let mut color = vec![WHITE; n_blocks];
-    let mut torn: Vec<usize> = Vec::new();
+    // Tear every connection with a backward arc (or a self-loop) in the ordering.
     let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    let mut stack: Vec<(NodeId, usize)> = Vec::new();
-    for &root in scc {
-        if color[root] != WHITE {
-            continue;
-        }
-        color[root] = GRAY;
-        stack.push((root, 0));
-        while let Some(&(blk, ci)) = stack.last() {
-            if ci < sn[blk].len() {
-                stack.last_mut().unwrap().1 += 1;
-                let (tgt, cid) = sn[blk][ci];
-                match color[tgt] {
-                    GRAY if seen.insert(cid) => torn.push(cid),
-                    GRAY => {}
-                    WHITE => {
-                        color[tgt] = GRAY;
-                        stack.push((tgt, 0));
-                    }
-                    _ => {}
-                }
-            } else {
-                color[blk] = BLACK;
-                stack.pop();
-            }
+    let mut torn: Vec<usize> = Vec::new();
+    for &(s, t, cid) in &edges {
+        if (s == t || pos[s] > pos[t]) && seen.insert(cid) {
+            torn.push(cid);
         }
     }
     torn
@@ -908,10 +887,11 @@ mod tests {
 
     #[test]
     fn minimal_tear_set_cuts_only_back_edges() {
-        // SCC 0->1->2->0 (cycle) plus the forward chord 0->2. A single back-edge
-        // (2->0) breaks the cycle; the chord is not part of any cycle. The DFS
-        // tear cuts exactly one connection, where a BFS-layering heuristic would
-        // over-cut the chord as a cross-edge too.
+        // SCC 0->1->2->0 (cycle) plus the forward chord 0->2. Only 2->0 need be
+        // cut; the chord is on no cycle. The Eades--Lin--Smyth tear cuts exactly
+        // that one connection, where a plain DFS back-edge scan started at the
+        // wrong node would over-cut the chord and a BFS-layering heuristic would
+        // over-cut it as a cross-edge too.
         let blocks = alg_roles(&[true, true, true]);
         let connections = vec![(0, 1, 0), (1, 2, 1), (2, 0, 2), (0, 2, 3)];
         let g = Schedule::new(&blocks, &connections);
@@ -964,6 +944,9 @@ mod tests {
         let connections = vec![(0, 0, 0)];
         let g = Schedule::new(&blocks, &connections);
         assert!(g.has_loops);
+        // A self-loop is a cycle of its own: the tear must close it (one booster).
+        assert_eq!(g.loop_closing_connections(), &[0],
+                   "the self-loop connection is torn");
     }
 
     #[test]

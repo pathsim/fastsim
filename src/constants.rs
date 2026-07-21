@@ -70,21 +70,6 @@ pub const OPT_HISTORY: usize = 4;
 pub const NLS_COEF: f64 = 0.1;
 
 // ======================================================================
-// Scheduler / tearing (algebraic-loop connection cuts)
-// ======================================================================
-
-/// Upper bound on the number of distinct intra-SCC connections for which the
-/// scheduler computes an *exact-minimum* feedback connection set (the smallest
-/// set of connections whose removal makes the strongly-connected algebraic loop
-/// acyclic). The search enumerates connection subsets by ascending size, which
-/// is `O(2^c)` in the worst case, so it is only run while `c` stays at or below
-/// this cap; larger SCCs fall back to a DFS back-edge feedback arc set (valid,
-/// but not guaranteed minimum). Tearing fewer connections means fewer
-/// loop-closing residuals (ConnectionBoosters) for the algebraic-loop solver to
-/// drive to zero. 16 keeps the enumeration under ~65k subset checks.
-pub const TEAR_EXACT_MAX_CONNS: usize = 16;
-
-// ======================================================================
 // Events
 // ======================================================================
 
