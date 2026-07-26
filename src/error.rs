@@ -59,6 +59,19 @@ pub enum SimError {
 
     #[error("trajectory truncated at t={time:.6} before the requested end")]
     TruncatedTrajectory { time: f64 },
+
+    // ---- Linearization -----------------------------------------------------
+    #[error(
+        "block '{0}' has no linear state space model \
+         (switching, discontinuous, discrete time or non deterministic)"
+    )]
+    NotLinearizable(&'static str),
+
+    #[error(
+        "system is not well posed for linearization: an algebraic loop with \
+         unity gain survives the input break; mark an input point that breaks it"
+    )]
+    LinearizationIllPosed,
 }
 
 pub type Result<T> = std::result::Result<T, SimError>;
@@ -82,6 +95,9 @@ impl SimError {
             SimError::StepBelowMinimum { .. } => "StepSizeError",
             SimError::TruncatedTrajectory { .. } => "TruncatedTrajectoryError",
             SimError::SingularJacobian { .. } => "SingularJacobianError",
+            SimError::NotLinearizable(_) | SimError::LinearizationIllPosed => {
+                "LinearizationError"
+            }
             // Topology / lookup / op errors keep the historical ValueError shape.
             _ => "FastSimValueError",
         }

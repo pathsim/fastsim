@@ -44,8 +44,18 @@ fn diff_node(
     let n = graph.nodes[node as usize].clone();
 
     match n {
-        // Constants, params and unrelated inputs → 0
-        Node::Const(_) | Node::Param(_) => graph.constant(0.0),
+        // Constants and unrelated inputs / params → 0
+        Node::Const(_) => graph.constant(0.0),
+        Node::Param(i) => {
+            // d(param_i)/d(wrt) = 1 iff this is the differentiation target.
+            // Compare by flat parameter index for exactly the reason spelled
+            // out for `Node::Input` below: optimizer identity rewrites clone a
+            // node's CONTENT under a fresh NodeId, so one parameter can appear
+            // under several ids and the `node == wrt` check alone would miss
+            // the duplicates. Two `Param(i)` nodes are the SAME parameter.
+            let same_param = matches!(graph.nodes[wrt as usize], Node::Param(j) if j == i);
+            graph.constant(if same_param { 1.0 } else { 0.0 })
+        }
         Node::Input(i) => {
             // d(input_i)/d(wrt) = 1 iff this is the differentiation target. The
             // `node == wrt` (NodeId) check above misses optimizer-introduced
@@ -546,6 +556,43 @@ pub fn jacobian(graph: &Graph) -> Graph {
 pub fn jacobian_wrt_slot(graph: &Graph, slot_name: &str) -> Option<Graph> {
     let slot = graph.signature.slot(slot_name)?;
     Some(jacobian_wrt_flat_range(graph, slot.offset, slot.offset + slot.size))
+}
+
+/// Differentiate all outputs w.r.t. the mutable parameter `idx`.
+///
+/// Returns a graph whose outputs are the single column `∂out/∂p`, in output
+/// order. `None` if the graph has no such parameter.
+///
+/// Parameters are a separate namespace from the inputs (`Node::Param` vs
+/// `Node::Input`), so this is what a *design* sensitivity differentiates
+/// against: `∂y/∂gain` rather than `∂y/∂u`. The state/input Jacobians the
+/// solver uses stay untouched.
+pub fn jacobian_wrt_param(graph: &Graph, idx: u32) -> Option<Graph> {
+    if idx as usize >= graph.n_params {
+        return None;
+    }
+
+    let mut jac = graph.clone();
+    let original_outputs = jac.outputs.clone();
+    jac.outputs.clear();
+
+    // Reuse the existing node for this parameter when the graph already has
+    // one, so the `node == wrt` fast path in `diff_node` fires.
+    let p_node = {
+        let node = Node::Param(idx);
+        match jac.dedup.get(&node) {
+            Some(&id) => id,
+            None => jac.add(node),
+        }
+    };
+
+    for &out_id in &original_outputs {
+        let mut memo = HashMap::new();
+        let deriv = differentiate(&mut jac, out_id, p_node, &mut memo);
+        jac.outputs.push(deriv);
+    }
+
+    Some(jac)
 }
 
 /// Core: differentiate w.r.t. a contiguous range of flat input indices.
@@ -1425,4 +1472,94 @@ mod tests {
                 "d/dx tgamma({}): got {}, expected Γ·ψ = {}", xv, d_tg, expected_tg);
         }
     }
+
+    // ----------------------------------------------------------------------------
+    // Parameter sensitivity
+    // ----------------------------------------------------------------------------
+
+    /// `y = gain * u` → `∂y/∂gain = u`, exactly.
+    #[test]
+    fn param_jacobian_matches_analytic() {
+        let mut g = Graph::with_single_input("u", 1);
+        g.n_params = 1;
+        g.param_defaults = vec![2.5];
+        g.param_names = vec!["gain".into()];
+        let u = g.add(Node::Input(0));
+        let gain = g.param(0);
+        let y = g.binary(BinOp::Mul, u, gain);
+        g.outputs.push(y);
+
+        let jac = jacobian_wrt_param(&g, 0).unwrap();
+        let d = jac.interpret(&[&[4.0]], &[2.5]);
+
+        assert_eq!(d.len(), 1);
+        assert!((d[0] - 4.0).abs() < 1e-12, "d(gain*u)/dgain should be u = 4, got {}", d[0]);
+    }
+
+    /// Differentiating w.r.t. an unrelated parameter gives zero, not a stray
+    /// derivative from the other one.
+    #[test]
+    fn param_jacobian_isolates_the_target() {
+        let mut g = Graph::with_single_input("u", 1);
+        g.n_params = 2;
+        g.param_defaults = vec![3.0, 7.0];
+        g.param_names = vec!["a".into(), "b".into()];
+        let u = g.add(Node::Input(0));
+        let (a, b) = (g.param(0), g.param(1));
+        let au = g.binary(BinOp::Mul, a, u);
+        let y = g.binary(BinOp::Add, au, b);
+        g.outputs.push(y);
+
+        let da = jacobian_wrt_param(&g, 0).unwrap().interpret(&[&[5.0]], &[3.0, 7.0]);
+        let db = jacobian_wrt_param(&g, 1).unwrap().interpret(&[&[5.0]], &[3.0, 7.0]);
+
+        assert!((da[0] - 5.0).abs() < 1e-12, "d(a*u + b)/da = u = 5, got {}", da[0]);
+        assert!((db[0] - 1.0).abs() < 1e-12, "d(a*u + b)/db = 1, got {}", db[0]);
+    }
+
+    /// Regression for the duplication trap the `Node::Input` arm documents:
+    /// optimizer identity rewrites (`x - 0 → x`) clone a node's CONTENT under a
+    /// fresh NodeId, so comparing the differentiation target by NodeId alone
+    /// silently drops the gradient. Parameters hit exactly the same trap.
+    #[test]
+    fn param_jacobian_survives_optimizer_rewrites() {
+        let mut g = Graph::with_single_input("u", 1);
+        g.n_params = 1;
+        g.param_defaults = vec![2.0];
+        g.param_names = vec!["gain".into()];
+        let u = g.add(Node::Input(0));
+        let gain = g.param(0);
+
+        // `(gain - 0) * u`: the boundary term the optimizer rewrites away,
+        // duplicating the parameter node's content under a new id.
+        let zero = g.constant(0.0);
+        let gain_shifted = g.binary(BinOp::Sub, gain, zero);
+        let y = g.binary(BinOp::Mul, gain_shifted, u);
+        g.outputs.push(y);
+
+        super::super::optimize::optimize(&mut g);
+
+        let d = jacobian_wrt_param(&g, 0).unwrap().interpret(&[&[6.0]], &[2.0]);
+        assert!(
+            (d[0] - 6.0).abs() < 1e-12,
+            "gradient dropped through the rewritten boundary term: got {}, expected u = 6",
+            d[0]
+        );
+    }
+
+    /// An out-of-range parameter index is rejected rather than yielding zeros.
+    #[test]
+    fn param_jacobian_rejects_unknown_index() {
+        let mut g = Graph::with_single_input("u", 1);
+        g.n_params = 1;
+        g.param_defaults = vec![1.0];
+        g.param_names = vec!["gain".into()];
+        let u = g.add(Node::Input(0));
+        let gain = g.param(0);
+        let y = g.binary(BinOp::Mul, u, gain);
+        g.outputs.push(y);
+
+        assert!(jacobian_wrt_param(&g, 1).is_none());
+    }
 }
+

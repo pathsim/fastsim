@@ -336,9 +336,238 @@ class Simulation:
         """
         return self.__dict__["_sim"].enable_wct_trace()
 
+    def sensitivity(self, outputs, wrt, mode="steadystate", t=None):
+        """Sensitivity of the tapped outputs to a set of model parameters,
+        ``dy/dp``, shaped ``(n_outputs, n_parameters)``.
+
+        This is the primitive inverse design is built on, and it is useful on
+        its own for parameter estimation, optimization and uncertainty
+        propagation.
+
+        Parameters
+        ----------
+        outputs : list[PortReference]
+            tap points, e.g. ``[plant[0]]``.
+        wrt : list[Parameter]
+            parameter handles from ``block.param(name)``. A parameter the block
+            does not carry contributes a zero column.
+        mode : str
+            which operating point the sensitivity is taken at. Only
+            ``"steadystate"`` is implemented; ``"transient"`` and ``"pss"``
+            are reserved.
+        t : float, optional
+            evaluation time, defaults to the current simulation time.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``dy/dp``, shape ``(n_outputs, n_parameters)``.
+
+        Notes
+        -----
+        The algebraic network is settled first, but the system is *not* driven
+        to its steady state — call :meth:`steadystate` beforehand if that is the
+        operating point you mean.
+        """
+        import numpy as np
+
+        if mode != "steadystate":
+            raise NotImplementedError(
+                f"sensitivity(mode={mode!r}) is not implemented yet; "
+                "only 'steadystate' is available"
+                )
+
+        specs = [(p.block, p.name) for p in wrt]
+        values, n_y, n_p = self.__dict__["_sim"].sensitivity(specs, list(outputs), t)
+        return np.asarray(values, dtype=float).reshape(n_y, n_p)
+
+    def solve_inverse(self, targets, free, mode="steadystate",
+                      tolerance=1e-8, iterations_max=50):
+        """Solve backwards for the parameter values that put the system at a
+        desired operating condition.
+
+        Where :meth:`steadystate` answers "given these settings, where does it
+        settle?", this answers the reverse: "I want it to settle *here*, what
+        settings do I need?". The classic case is trimming — find the control
+        input that holds a desired equilibrium.
+
+        Outer Newton over the free parameters, with the existing steady-state
+        solver on the inside. The outer Jacobian comes from :meth:`sensitivity`,
+        so it is exact rather than finite-differenced.
+
+        Parameters
+        ----------
+        targets : list[tuple[PortReference, float]]
+            output ports and the values they should take.
+        free : list[Parameter]
+            parameter handles solved for, from ``block.param(name)``.
+        mode : str
+            inner solve to use. Only ``"steadystate"`` is implemented.
+        tolerance : float
+            convergence tolerance on the max residual.
+        iterations_max : int
+            maximum outer Newton iterations.
+
+        Returns
+        -------
+        dict
+            ``{"success", "residual", "iterations", "values"}``, where
+            ``values`` maps each parameter to its solved value.
+
+        Raises
+        ------
+        ValueError
+            if the problem is not square: one free parameter is needed per
+            scalar target. An under- or over-determined problem is rejected
+            rather than silently least-squares fitted.
+        RuntimeError
+            if the outer iteration does not converge.
+        """
+        import numpy as np
+
+        if mode != "steadystate":
+            raise NotImplementedError(
+                f"solve_inverse(mode={mode!r}) is not implemented yet; "
+                "only 'steadystate' is available"
+                )
+
+        ports = [p for p, _ in targets]
+        wanted = np.concatenate([np.atleast_1d(v) for _, v in targets]) if targets \
+            else np.zeros(0)
+
+        if len(free) != len(wanted):
+            raise ValueError(
+                f"inverse solve is not square: {len(wanted)} target value(s) but "
+                f"{len(free)} free parameter(s). Give one free parameter per "
+                "scalar target."
+                )
+
+        p = np.array([h.value for h in free], dtype=float)
+        residual = np.inf
+
+        for it in range(1, iterations_max + 1):
+            for h, v in zip(free, p):
+                h.value = float(v)
+
+            self.steadystate(reset=False)
+
+            got = np.concatenate([np.atleast_1d(pr.get_outputs()) for pr in ports]) \
+                if ports else np.zeros(0)
+            r = got - wanted
+            residual = float(np.max(np.abs(r))) if r.size else 0.0
+
+            if residual < tolerance:
+                return {
+                    "success": True,
+                    "residual": residual,
+                    "iterations": it,
+                    "values": {h.name: float(v) for h, v in zip(free, p)},
+                    }
+
+            J = self.sensitivity(outputs=ports, wrt=free, mode="steadystate")
+
+            try:
+                dp = np.linalg.solve(J, r)
+            except np.linalg.LinAlgError as exc:
+                raise RuntimeError(
+                    "inverse solve stalled: the sensitivity matrix is singular, "
+                    "so the chosen parameters cannot move the chosen outputs"
+                    ) from exc
+
+            p = p - dp
+
+        raise RuntimeError(
+            f"inverse solve did not converge in {iterations_max} iterations "
+            f"(residual {residual:.3e})"
+            )
+
     def linearize(self):
-        """Linearize the system about the current operating point (state and inputs), replacing nonlinear blocks with their local linear approximation."""
+        """Switch the system over to its linearized surrogate.
+
+        Not implemented in fastsim, and deliberately so: the engine derives every
+        Jacobian from the SSA graph on demand and never caches a Taylor surrogate
+        in the operators, so there is no linearized mode to switch into. Use
+        :meth:`to_statespace` for the linear model itself.
+        """
         return self.__dict__["_sim"].linearize()
+
+    def to_statespace(self, inputs, outputs, t=None):
+        """Assemble a global linear state space model of the interconnected
+        system around its current operating point.
+
+        The connections between the marked input and output points are
+        eliminated, so the returned block reproduces the small-signal behaviour
+        of the whole diagram. An algebraic loop that survives the input break is
+        eliminated too, rather than rejected.
+
+        This is a pure query: every block keeps evaluating its original
+        functions afterwards.
+
+        Parameters
+        ----------
+        inputs : list[PortReference]
+            break points that become free external inputs, e.g. ``[plant[0]]``.
+            Existing incoming connections at those ports are cut.
+        outputs : list[PortReference]
+            tap points designating the system outputs, e.g. ``[plant[0]]``.
+        t : float, optional
+            evaluation time, defaults to the current simulation time.
+
+        Returns
+        -------
+        StateSpace
+            the linear model, carrying the block names it was built from in its
+            ``state_labels`` / ``input_labels`` / ``output_labels`` attributes.
+            Those are exactly the ``states`` / ``inputs`` / ``outputs`` keyword
+            arguments of ``control.StateSpace``, so the model hands over to
+            python-control without an adapter.
+
+        Raises
+        ------
+        LinearizationError
+            if a block has no linear model (switching, discontinuous,
+            discrete-time or non-deterministic), or if the interconnection is
+            not well posed.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            Sim.steadystate(reset=False)
+            ss = Sim.to_statespace(inputs=[err[0]], outputs=[plant[0]])
+
+            import control
+            sys = control.StateSpace(
+                ss.A, ss.B, ss.C, ss.D,
+                states=ss.state_labels,
+                inputs=ss.input_labels,
+                outputs=ss.output_labels,
+                )
+        """
+        import numpy as np
+
+        from .blocks import StateSpace
+
+        m = self.__dict__["_sim"].to_statespace(list(inputs), list(outputs), t)
+        nx, nu, ny = m["nx"], m["nu"], m["ny"]
+
+        def _mat(flat, rows, cols):
+            return np.asarray(flat, dtype=float).reshape(rows, cols)
+
+        ss = StateSpace(
+            A=_mat(m["A"], nx, nx),
+            B=_mat(m["B"], nx, nu),
+            C=_mat(m["C"], ny, nx),
+            D=_mat(m["D"], ny, nu),
+            initial_value=np.zeros(nx),
+            )
+
+        # The generated block classes take only the matrices, so the identifiers
+        # are attached here rather than passed through the constructor.
+        ss.state_labels = m["state_labels"]
+        ss.input_labels = m["input_labels"]
+        ss.output_labels = m["output_labels"]
+        return ss
 
     def pending_ops(self):
         """Return a handle on the simulation's mutation queue.  Equivalent

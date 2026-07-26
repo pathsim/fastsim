@@ -829,6 +829,124 @@ impl Simulation {
     }
 
     // ==================================================================================
+    // Operating-point linearization
+    // ==================================================================================
+
+    /// Assemble a global linear state space model of the interconnected system
+    /// around its current operating point.
+    ///
+    /// The connections between the marked input and output points are
+    /// eliminated, so the result reproduces the small-signal behaviour of the
+    /// whole diagram. `inputs` marks the break points that become free external
+    /// inputs (existing incoming connections there are cut); `outputs` marks the
+    /// tap points.
+    ///
+    /// This is a **pure query**: every block keeps evaluating its original
+    /// functions afterwards. The Jacobians come from AD over each block's SSA
+    /// graph, so `(A, B, C, D)` are exact for traceable blocks.
+    ///
+    /// # Errors
+    /// [`SimError::NotLinearizable`] if a block has no linear model,
+    /// [`SimError::LinearizationIllPosed`] if the interconnection is singular,
+    /// and [`SimError::BlockNotFound`] if a marked port names a block that is
+    /// not part of this simulation.
+    pub fn to_statespace(
+        &mut self,
+        inputs: &[crate::utils::portreference::PortReference],
+        outputs: &[crate::utils::portreference::PortReference],
+        t: Option<f64>,
+    ) -> crate::error::Result<crate::linearize::GlobalModel> {
+        let t = t.unwrap_or(self.time);
+
+        // Settle every block's registers at the operating point first.
+        self._update(t);
+
+        let position = |target: &BlockRef| {
+            self.blocks.iter().position(|b| std::rc::Rc::ptr_eq(b, target))
+        };
+
+        let mut in_cols: Vec<Vec<(usize, usize)>> = Vec::new();
+        for pr in inputs {
+            let bi = position(&pr.block).ok_or(crate::error::SimError::BlockNotFound)?;
+            for row in pr._get_input_indices() {
+                in_cols.push(vec![(bi, row)]);
+            }
+        }
+
+        let mut out_rows: Vec<Option<(usize, usize)>> = Vec::new();
+        for pr in outputs {
+            let bi = position(&pr.block).ok_or(crate::error::SimError::BlockNotFound)?;
+            for row in pr._get_output_indices() {
+                out_rows.push(Some((bi, row)));
+            }
+        }
+
+        crate::linearize::assemble_from_ports(
+            &self.blocks,
+            &self.connections,
+            &in_cols,
+            &out_rows,
+            t,
+        )
+    }
+
+    /// Steady-state sensitivity of the tapped outputs to a set of model
+    /// parameters: `dy/dp`, row-major `n_y × n_p`.
+    ///
+    /// This is the primitive inverse design is built on. `params` names
+    /// `(block, parameter name)` pairs — a *design* quantity such as an
+    /// `Amplifier`'s `"gain"`, not a signal. A parameter a block does not carry
+    /// contributes a zero column.
+    ///
+    /// Like [`Self::to_statespace`] this settles the algebraic network at the
+    /// current state, but it does not drive the system to its steady state:
+    /// call [`Self::steadystate`] first if that is the operating point you mean.
+    ///
+    /// # Errors
+    /// [`SimError::NotLinearizable`] if a block has no linear model,
+    /// [`SimError::LinearizationIllPosed`] if the interconnection is singular,
+    /// [`SimError::SingularJacobian`] if the operating point is not isolated,
+    /// and [`SimError::BlockNotFound`] for a block outside this simulation.
+    pub fn sensitivity(
+        &mut self,
+        params: &[(BlockRef, String)],
+        outputs: &[crate::utils::portreference::PortReference],
+        t: Option<f64>,
+    ) -> crate::error::Result<Vec<f64>> {
+        let t = t.unwrap_or(self.time);
+
+        // Settle every block's registers at the operating point first —
+        // `∂y/∂gain = u` depends on the actual input values.
+        self._update(t);
+
+        let position = |target: &BlockRef| {
+            self.blocks.iter().position(|b| std::rc::Rc::ptr_eq(b, target))
+        };
+
+        let mut specs: Vec<(usize, String)> = Vec::with_capacity(params.len());
+        for (blk, name) in params {
+            let bi = position(blk).ok_or(crate::error::SimError::BlockNotFound)?;
+            specs.push((bi, name.clone()));
+        }
+
+        let mut out_rows: Vec<Option<(usize, usize)>> = Vec::new();
+        for pr in outputs {
+            let bi = position(&pr.block).ok_or(crate::error::SimError::BlockNotFound)?;
+            for row in pr._get_output_indices() {
+                out_rows.push(Some((bi, row)));
+            }
+        }
+
+        crate::linearize::assemble_sensitivity(
+            &self.blocks,
+            &self.connections,
+            &specs,
+            &out_rows,
+            t,
+        )
+    }
+
+    // ==================================================================================
     // Periodic steady state (shooting)
     // ==================================================================================
 

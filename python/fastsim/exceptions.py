@@ -55,6 +55,22 @@ class PortConnectionError(FastSimError, ValueError):
     """
 
 
+class LinearizationError(FastSimError, ValueError):
+    """The model has no linear state space model in the current operating point.
+
+    Raised when a block with a switching, discontinuous, discrete-time or
+    non-deterministic characteristic (``Comparator``, ``Relay``, ``Switch``,
+    ``RNG``, ``Counter``, the logic and discrete blocks) is asked for its
+    linearization, and when an algebraic loop with unity gain survives the
+    input break so the interconnection is not well posed.
+
+    A numerical Jacobian would produce a number that looks like a linearization
+    but is not one, so these fail loudly instead.
+
+    Subclasses ``ValueError`` for backwards compatibility.
+    """
+
+
 class SolverError(FastSimError, RuntimeError):
     """Base class for numerical solver failures.
 
@@ -112,6 +128,7 @@ __all__ = [
     "FastSimValueError",
     "InvalidBlockParameterError",
     "PortConnectionError",
+    "LinearizationError",
     "SolverError",
     "ConvergenceError",
     "AlgebraicLoopError",

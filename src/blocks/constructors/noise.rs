@@ -312,6 +312,8 @@ pub fn random_number_generator(sampling_period: Option<f64>, seed: Option<u64>) 
         Some(out_port_map()),
     );
     b.type_name = "RandomNumberGenerator";
+    // Non deterministic output: no linear model.
+    b.linearizable = false;
     b.role = BlockRole { is_dyn: false, is_src: true, is_rec: false };
     b.len_fn = Some(Box::new(|_| 0));
 

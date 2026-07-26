@@ -134,6 +134,14 @@ pub struct Block {
     /// Topology role — source of truth for graph classification.
     pub role: BlockRole,
 
+    /// Whether this block has a valid linear state space model around an
+    /// operating point. `false` for switching / discontinuous / discrete-time /
+    /// non-deterministic blocks, where a numerical Jacobian would produce a
+    /// number that looks like a linearization but is not one. Set by
+    /// `set_discrete`/`set_discrete_lazy` for every discrete block, and
+    /// explicitly by the constructors of the switching blocks.
+    pub linearizable: bool,
+
     /// Dynamic-path Jacobian operator (the dyn op-graph). Supplies the
     /// sparse-aware AD Jacobian, so the runtime no longer needs a hand-written
     /// `jac_dyn` + `jac_pattern`. Set at construction by `set_dynamic` (or by
@@ -205,6 +213,7 @@ impl Block {
             f_dyn: None,
             jac_dyn: None,
             jacobian_const: false,
+            linearizable: true,
             dyn_op: None,
             alg_op: None,
             op_memory: Vec::new(),
@@ -527,6 +536,10 @@ impl Block {
         ));
         self.op_memory = memory;
         self.op_events = events;
+        // A discrete-time block has no continuous-time linear model: its output
+        // is held between sample instants, so `dy/du` at a point in time says
+        // nothing about the sampled dynamics.
+        self.linearizable = false;
     }
 
     /// Shape-poly discrete block: resolves `(alg, memory, events)` at the
@@ -538,6 +551,131 @@ impl Block {
     ) {
         self.op_type_name = Some(type_name);
         self.op_discrete_builder = Some(std::rc::Rc::new(builder));
+        // See `set_discrete`: discrete time, no continuous linear model.
+        self.linearizable = false;
+    }
+
+    /// The block's local linear model around its current operating point.
+    ///
+    /// A pure query: the Jacobians come from `Operator::dense_jacobian_wrt`,
+    /// which differentiates the SSA graph without touching the operator. The
+    /// block keeps evaluating its original functions afterwards.
+    ///
+    /// `A`/`B` come from the dynamic path, `C`/`D` from the algebraic path. A
+    /// dynamic block without an algebraic operator has the implicit identity
+    /// output `y = x` (the `Integrator`/`ODE` shape), which is exact and needs
+    /// no differencing.
+    ///
+    /// # Errors
+    /// [`SimError::NotLinearizable`] when the block declares itself as having
+    /// no linear model.
+    pub fn to_statespace(&self, t: f64) -> crate::error::Result<crate::linearize::LocalModel> {
+        use crate::linearize::{fit, LocalModel};
+
+        if !self.linearizable {
+            return Err(crate::error::SimError::NotLinearizable(self.type_name));
+        }
+
+        let x: &[f64] = self.engine.as_ref().map(|e| e.get()).unwrap_or(&[]);
+        let u: &[f64] = &self.inputs._data;
+        let (nx, nu, ny) = (x.len(), u.len(), self.outputs._data.len());
+
+        let mem_guard = self.mem_ref.as_ref().map(|c| c.borrow());
+        let mem: &[f64] = match &mem_guard {
+            Some(g) => g.as_slice(),
+            None => &[],
+        };
+
+        let mut model = LocalModel::zeros(nx, nu, ny);
+
+        // dynamics -> A, B
+        if nx > 0 {
+            if let Some(op) = &self.dyn_op {
+                model.a = fit(op.dense_jacobian_wrt("x", x, u, t, mem), nx, nx);
+                model.b = fit(op.dense_jacobian_wrt("u", x, u, t, mem), nx, nu);
+            }
+        }
+
+        // output map -> C, D
+        match &self.alg_op {
+            Some(op) => {
+                model.c = fit(op.dense_jacobian_wrt("x", x, u, t, mem), ny, nx);
+                model.d = fit(op.dense_jacobian_wrt("u", x, u, t, mem), ny, nu);
+            }
+            // No algebraic operator: either the implicit `y = x` of a dynamic
+            // block, or a source/sink with no input-to-output path at all.
+            None if nx > 0 => {
+                for i in 0..ny.min(nx) {
+                    model.c[i * nx + i] = 1.0;
+                }
+            }
+            None => {}
+        }
+
+        Ok(model)
+    }
+
+    /// Names of the mutable parameters this block exposes, deduplicated across
+    /// its algebraic and dynamic paths.
+    ///
+    /// These are what an inverse-design or sensitivity query addresses — a
+    /// named model parameter such as an `Amplifier`'s `"gain"`, not a signal.
+    pub fn param_names(&self) -> Vec<String> {
+        let width = self.inputs._data.len();
+        let mut names: Vec<String> = Vec::new();
+        for op in [self.alg_op.as_ref(), self.dyn_op.as_ref()].into_iter().flatten() {
+            for n in op.param_names(width) {
+                if !names.contains(&n) {
+                    names.push(n);
+                }
+            }
+        }
+        names
+    }
+
+    /// Sensitivity of this block's equations to the named parameter:
+    /// `(∂(dx/dt)/∂p, ∂y/∂p)`, of length `nx` and `ny`.
+    ///
+    /// The two paths carry independent parameter namespaces, so the name is
+    /// resolved separately on each; a parameter absent from a path contributes
+    /// zeros there rather than being an error.
+    ///
+    /// # Errors
+    /// [`SimError::NotLinearizable`] when the block declares no linear model —
+    /// a sensitivity is as meaningless there as a Jacobian.
+    pub fn param_sensitivity(
+        &self,
+        name: &str,
+        t: f64,
+    ) -> crate::error::Result<(Vec<f64>, Vec<f64>)> {
+        if !self.linearizable {
+            return Err(crate::error::SimError::NotLinearizable(self.type_name));
+        }
+
+        let x: &[f64] = self.engine.as_ref().map(|e| e.get()).unwrap_or(&[]);
+        let u: &[f64] = &self.inputs._data;
+        let (nx, ny, width) = (x.len(), self.outputs._data.len(), u.len());
+
+        let mem_guard = self.mem_ref.as_ref().map(|c| c.borrow());
+        let mem: &[f64] = match &mem_guard {
+            Some(g) => g.as_slice(),
+            None => &[],
+        };
+
+        let column = |op: Option<&crate::blocks::operator::Operator>, len: usize| {
+            let mut out = vec![0.0; len];
+            if let Some(op) = op {
+                if let Some(idx) = op.param_index(name, width) {
+                    if let Some(vals) = op.dense_jacobian_wrt_param(idx, x, u, t, mem) {
+                        let n = len.min(vals.len());
+                        out[..n].copy_from_slice(&vals[..n]);
+                    }
+                }
+            }
+            out
+        };
+
+        Ok((column(self.dyn_op.as_ref(), nx), column(self.alg_op.as_ref(), ny)))
     }
 
     pub fn solve(&mut self, t: f64, dt: f64) -> f64 {

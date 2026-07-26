@@ -114,6 +114,38 @@ def _factory_kwargs(params):
     return {k: v for k, v in params.items() if v is not Ellipsis}
 
 
+
+class Parameter:
+    """A handle on one named constructor parameter of a block.
+
+    Ports are addressed as ``block[0]``; parameters are addressed as
+    ``block.param("gain")``. The distinction matters for design work: a port
+    carries a *signal*, a parameter is a *design quantity* the model is
+    differentiated against.
+
+    Reading and writing ``value`` goes through the block's normal parameter
+    path, so an assignment rebuilds the block in place and reaches a running
+    simulation.
+    """
+
+    __slots__ = ("block", "name")
+
+    def __init__(self, block, name):
+        self.block = block
+        self.name = name
+
+    @property
+    def value(self):
+        return getattr(self.block, self.name)
+
+    @value.setter
+    def value(self, v):
+        setattr(self.block, self.name, v)
+
+    def __repr__(self):
+        return f"Parameter({type(self.block).__name__}.{self.name}={self.value!r})"
+
+
 class _ShimBlock(Block):
     """Base for factory-backed blocks. Concrete subclasses set ``_factory_name``,
     ``_param_defaults`` and the port-label class attributes, and provide an
@@ -125,6 +157,17 @@ class _ShimBlock(Block):
     output_port_labels = None
 
     __getitem__ = _port_getitem
+
+    def param(self, name):
+        """Handle on the named constructor parameter, for sensitivity and
+        inverse-design queries. Raises ``AttributeError`` for unknown names."""
+        params = self.__dict__.get('_init_params') or {}
+        if name not in params:
+            raise AttributeError(
+                f"'{type(self).__name__}' has no parameter '{name}'; "
+                f"available: {sorted(params)}"
+                )
+        return Parameter(self, name)
 
     @classmethod
     @lru_cache(maxsize=None)
@@ -148,7 +191,7 @@ class _ShimBlock(Block):
             old_state = self.state
             params[attr] = value
             factory = getattr(_fastsim, self._factory_name)
-            self._init_from(factory(**_factory_kwargs(params)))
+            self._adopt(factory(**_factory_kwargs(params)))
             if old_state is not None and self.state is not None:
                 if len(old_state) == len(self.state):
                     self.state = old_state
@@ -171,7 +214,7 @@ class _ShimBlock(Block):
         old_state = self.state
         params.update(valid)
         factory = getattr(_fastsim, self._factory_name)
-        self._init_from(factory(**_factory_kwargs(params)))
+        self._adopt(factory(**_factory_kwargs(params)))
         if old_state is not None and self.state is not None:
             if len(old_state) == len(self.state):
                 self.state = old_state
@@ -226,11 +269,11 @@ class _JitShimBlock(Block):
                 params['func'] = _adapt_function_arity(value)
             jit_block = self._jit_fn(params)
             if jit_block is not None:
-                self._init_from(jit_block)
+                self._adopt(jit_block)
                 self.__dict__['_jit_compiled'] = True
             else:
                 factory = getattr(_fastsim, self._factory_name)
-                self._init_from(factory(**params))
+                self._adopt(factory(**params))
                 self.__dict__['_jit_compiled'] = False
             if old_state is not None and self.state is not None:
                 if len(old_state) == len(self.state):
@@ -256,11 +299,11 @@ class _JitShimBlock(Block):
         params.update(valid)
         jit_block = self._jit_fn(params)
         if jit_block is not None:
-            self._init_from(jit_block)
+            self._adopt(jit_block)
             self.__dict__['_jit_compiled'] = True
         else:
             factory = getattr(_fastsim, self._factory_name)
-            self._init_from(factory(**params))
+            self._adopt(factory(**params))
             self.__dict__['_jit_compiled'] = False
         if old_state is not None and self.state is not None:
             if len(old_state) == len(self.state):

@@ -736,15 +736,87 @@ impl PySimulation {
     /// boundary (cooperative, callable from callbacks).
     fn stop(&self) { self.inner.borrow_mut().stop(); }
 
-    /// Linearize the system about the current operating point. Not yet
-    /// implemented in fastsim — raises `NotImplementedError` (pathsim parity
-    /// gap, surfaced honestly instead of a silent no-op).
+    /// Assemble a global linear state space model of the system around its
+    /// current operating point. Returns the raw pieces; the Python facade wraps
+    /// them into a `StateSpace` block.
+    ///
+    /// A pure query — the blocks keep evaluating their original functions.
+    #[pyo3(signature = (inputs, outputs, t=None))]
+    fn to_statespace(
+        &self,
+        py: Python<'_>,
+        inputs: Vec<PyRef<'_, super::core::PyPortRef>>,
+        outputs: Vec<PyRef<'_, super::core::PyPortRef>>,
+        t: Option<f64>,
+    ) -> PyResult<Py<PyAny>> {
+        use crate::utils::portreference::PortReference;
+
+        // `PortReference` is not `Clone` (it caches resolved indices), so the
+        // marked ports are rebuilt from their block and port list.
+        let rebuild = |p: &super::core::PyPortRef| {
+            PortReference::new(p.inner.block.clone(), Some(p.inner.ports.clone()))
+        };
+        let ins: Vec<PortReference> = inputs.iter().map(|p| rebuild(p)).collect();
+        let outs: Vec<PortReference> = outputs.iter().map(|p| rebuild(p)).collect();
+
+        let m = self.inner.borrow_mut().to_statespace(&ins, &outs, t)?;
+
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("A", m.a)?;
+        dict.set_item("B", m.b)?;
+        dict.set_item("C", m.c)?;
+        dict.set_item("D", m.d)?;
+        dict.set_item("nx", m.nx)?;
+        dict.set_item("nu", m.nu)?;
+        dict.set_item("ny", m.ny)?;
+        dict.set_item("state_labels", m.state_labels)?;
+        dict.set_item("input_labels", m.input_labels)?;
+        dict.set_item("output_labels", m.output_labels)?;
+        Ok(dict.into_any().unbind())
+    }
+
+    /// Steady-state sensitivity `dy/dp` of the tapped outputs to a set of named
+    /// model parameters. Returns `(values, n_y, n_p)` with `values` row-major.
+    #[pyo3(signature = (params, outputs, t=None))]
+    fn sensitivity(
+        &self,
+        params: Vec<(PyBlock, String)>,
+        outputs: Vec<PyRef<'_, super::core::PyPortRef>>,
+        t: Option<f64>,
+    ) -> PyResult<(Vec<f64>, usize, usize)> {
+        use crate::utils::portreference::PortReference;
+
+        let specs: Vec<(BlockRef, String)> = params
+            .into_iter()
+            .map(|(b, name)| (b.inner.clone(), name))
+            .collect();
+
+        let outs: Vec<PortReference> = outputs
+            .iter()
+            .map(|p| PortReference::new(p.inner.block.clone(), Some(p.inner.ports.clone())))
+            .collect();
+
+        let n_y: usize = outs.iter().map(|p| p.len()).sum();
+        let n_p = specs.len();
+
+        let values = self.inner.borrow_mut().sensitivity(&specs, &outs, t)?;
+        Ok((values, n_y, n_p))
+    }
+
+    /// Switch the system over to its linearized surrogate. Not implemented in
+    /// fastsim — raises `NotImplementedError`.
+    ///
+    /// This is deliberate, not a gap waiting to be filled: fastsim derives every
+    /// Jacobian from the SSA graph on demand and never caches a Taylor surrogate
+    /// in the operators (see `blocks/operator.rs`), so there is no linearized
+    /// mode to switch into. Use `to_statespace()` for the linear model itself —
+    /// that is the query pathsim's `to_statespace` provides, and it is
+    /// implemented here.
     fn linearize(&self) -> PyResult<()> {
-        // pathsim implements operating-point linearization; fastsim has not
-        // ported it yet. A silent no-op would masquerade as success, so we
-        // surface the gap explicitly (drop-in honesty).
         Err(PyNotImplementedError::new_err(
-            "Simulation.linearize() is not yet implemented in fastsim",
+            "Simulation.linearize() is not implemented in fastsim: the engine keeps \
+             no linearized surrogate mode. Use Simulation.to_statespace() to obtain \
+             the linear state space model.",
         ))
     }
     /// Revert a previous linearization. Not yet implemented in fastsim —

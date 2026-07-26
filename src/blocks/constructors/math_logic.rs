@@ -72,6 +72,8 @@ macro_rules! binary_logic_block {
                 Some(HashMap::from([("y".to_string(), 0)])),
             );
             blk.type_name = $name;
+            // Boolean valued, discontinuous output: no linear model.
+            blk.linearizable = false;
             blk.inputs.resize(2);
             blk.f_alg = Some(Box::new(|_x, u: &[f64], _t, out: &mut Vec<f64>| {
                 out.clear();
@@ -451,6 +453,8 @@ pub fn logic_block(name: &'static str, func: impl Fn(f64, f64) -> f64 + 'static)
         Some(HashMap::from([("y".to_string(), 0)])),
     );
     b.type_name = name;
+    // Boolean valued, discontinuous output: no linear model.
+    b.linearizable = false;
     b.inputs.resize(2);
 
     let func = Box::new(func);
@@ -484,6 +488,8 @@ pub fn equal_block(tolerance: f64) -> BlockRef {
         Some(HashMap::from([("y".to_string(), 0)])),
     );
     blk.type_name = "Equal";
+    // Boolean valued, discontinuous output: no linear model.
+    blk.linearizable = false;
     blk.inputs.resize(2);
     blk.f_alg = Some(Box::new(move |_x, u: &[f64], _t, out: &mut Vec<f64>| {
         out.clear();
@@ -515,6 +521,8 @@ pub fn logic_not() -> BlockRef {
     }
     let mut blk = Block::default_block();
     blk.type_name = "LogicNot";
+    // Boolean valued, discontinuous output: no linear model.
+    blk.linearizable = false;
     blk.f_alg = Some(Box::new(|_x, u: &[f64], _t, out: &mut Vec<f64>| {
         out.clear();
         out.push(build(&F64Builder, u[0]));

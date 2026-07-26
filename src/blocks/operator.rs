@@ -30,9 +30,13 @@ use smallvec::SmallVec;
 
 use crate::blocks::block::BlockFn;
 use crate::blocks::blockops::{Lut1dSpec, RegionGraph};
-use crate::constants::{LINSOLVE_SPARSE_MAX_DENSITY, LINSOLVE_SPARSE_MIN_DIM};
+use crate::constants::{
+    LINSOLVE_SPARSE_MAX_DENSITY, LINSOLVE_SPARSE_MIN_DIM, NUM_JAC_REL, NUM_JAC_TOL,
+};
 use crate::solvers::solver::{Jacobian, SparseJac};
-use crate::ssa::autodiff::{jacobian_is_constant, jacobian_sparse_wrt_slot};
+use crate::ssa::autodiff::{
+    jacobian_is_constant, jacobian_sparse_wrt_slot, jacobian_wrt_param, jacobian_wrt_slot,
+};
 use crate::ssa::graph::{Graph, InputSignature};
 use crate::ssa::tape::InterpretedFn;
 use crate::utils::numerical::num_jac;
@@ -214,6 +218,166 @@ impl Operator {
                 Jacobian::Matrix(m, jt.n)
             }
         })
+    }
+
+    /// Rectangular dense Jacobian `∂out/∂<wrt>` at `(x, u, t)`, row-major
+    /// `n_out × n_slot`. Returns `None` when the slot is absent or the operator
+    /// can neither trace nor evaluate.
+    ///
+    /// This is a one-shot query for operating-point linearization, deliberately
+    /// NOT built on [`Self::jacobian_wrt_state`]. That path feeds the implicit
+    /// solver, and its `Jacobian` representation is square throughout: the
+    /// sparsity gate keys on a single dimension `n`, and the dense presentation
+    /// scatters into `n × n`. That holds for `∂(dx/dt)/∂x` but cannot express
+    /// `B = ∂(dx/dt)/∂u` (`nx × nu`) or `C = ∂y/∂x` (`ny × nx`). Linearization
+    /// is not on any hot path, so it takes the plain dense route instead of
+    /// widening the solver's representation.
+    ///
+    /// Traceable operators differentiate the resolved graph by AD;
+    /// `jacobian_wrt_flat_range` emits the dense row-major `n_out × size`
+    /// layout directly. Opaque operators fall back to central differences over
+    /// the native closure.
+    pub fn dense_jacobian_wrt(
+        &self,
+        wrt: &str,
+        x: &[f64],
+        u: &[f64],
+        t: f64,
+        mem: &[f64],
+    ) -> Option<(Vec<f64>, usize, usize)> {
+        let width = u.len();
+
+        // Opaque (or a `Lazy` region that cannot lower at this width): central
+        // differences over the native closure.
+        let Some(graph) = self.graph.as_ref().and_then(|g| g.resolve(width)) else {
+            return self.finite_difference_wrt(wrt, x, u, t);
+        };
+
+        let n_cols = graph.signature.slot(wrt)?.size;
+        let n_rows = graph.outputs.len();
+        if n_rows == 0 || n_cols == 0 {
+            return Some((Vec::new(), n_rows, n_cols));
+        }
+
+        let tape = InterpretedFn::from_graph(jacobian_wrt_slot(&graph, wrt)?);
+        let t_arr = [t];
+        let inputs = slot_inputs(&tape.signature, x, u, &t_arr, mem)?;
+
+        let mut values = vec![0.0; tape.n_out];
+        tape.call_into(&inputs, &mut values);
+
+        Some((values, n_rows, n_cols))
+    }
+
+    /// Central-difference fallback for [`Self::dense_jacobian_wrt`] on opaque
+    /// operators. Only `"x"` and `"u"` are perturbable — the remaining slots
+    /// (time, discrete memory) are held fixed for an operating-point Jacobian.
+    fn finite_difference_wrt(
+        &self,
+        wrt: &str,
+        x: &[f64],
+        u: &[f64],
+        t: f64,
+    ) -> Option<(Vec<f64>, usize, usize)> {
+        // A `graph_only` operator carries a no-op `eval_fn` (the block keeps its
+        // own closure), so differencing it would silently yield zeros.
+        if self.graph.is_some() {
+            return None;
+        }
+
+        let mut probe = Vec::new();
+        (self.eval_fn)(x, u, t, &mut probe);
+        let n_rows = probe.len();
+
+        let n_cols = match wrt {
+            "x" => x.len(),
+            "u" => u.len(),
+            _ => return None,
+        };
+        if n_rows == 0 || n_cols == 0 {
+            return Some((Vec::new(), n_rows, n_cols));
+        }
+
+        let mut jac = vec![0.0; n_rows * n_cols];
+        let (mut xp, mut up) = (x.to_vec(), u.to_vec());
+        let (mut f_p, mut f_m) = (Vec::new(), Vec::new());
+
+        for j in 0..n_cols {
+            let base = if wrt == "x" { x[j] } else { u[j] };
+            let h = (NUM_JAC_REL * base.abs()).max(NUM_JAC_TOL);
+
+            let slot = if wrt == "x" { &mut xp[j] } else { &mut up[j] };
+            *slot = base + h;
+            f_p.clear();
+            (self.eval_fn)(&xp, &up, t, &mut f_p);
+
+            let slot = if wrt == "x" { &mut xp[j] } else { &mut up[j] };
+            *slot = base - h;
+            f_m.clear();
+            (self.eval_fn)(&xp, &up, t, &mut f_m);
+
+            let slot = if wrt == "x" { &mut xp[j] } else { &mut up[j] };
+            *slot = base;
+
+            for i in 0..n_rows {
+                let (p, m) = (f_p.get(i).copied()?, f_m.get(i).copied()?);
+                jac[i * n_cols + j] = (p - m) / (2.0 * h);
+            }
+        }
+
+        Some((jac, n_rows, n_cols))
+    }
+}
+
+impl Operator {
+    /// Names of the mutable parameters this path exposes, in index order.
+    /// Empty for opaque operators and for graphs that carry no parameters.
+    pub fn param_names(&self, width: usize) -> Vec<String> {
+        self.graph
+            .as_ref()
+            .and_then(|g| g.resolve(width))
+            .map(|g| g.param_names.clone())
+            .unwrap_or_default()
+    }
+
+    /// Index of the named parameter on this path, if it has one.
+    pub fn param_index(&self, name: &str, width: usize) -> Option<u32> {
+        self.param_names(width)
+            .iter()
+            .position(|n| n == name)
+            .map(|i| i as u32)
+    }
+
+    /// Sensitivity `∂out/∂p` of this path's outputs w.r.t. the parameter `idx`,
+    /// as a dense column of length `n_out`.
+    ///
+    /// Parameters live in their own namespace in the SSA graph
+    /// (`Node::Param`), so this differentiates against a *design* quantity —
+    /// `∂y/∂gain` — rather than against the state or the inputs. Opaque
+    /// operators have no parameters to differentiate and return `None`.
+    pub fn dense_jacobian_wrt_param(
+        &self,
+        idx: u32,
+        x: &[f64],
+        u: &[f64],
+        t: f64,
+        mem: &[f64],
+    ) -> Option<Vec<f64>> {
+        let width = u.len();
+        let graph = self.graph.as_ref().and_then(|g| g.resolve(width))?;
+
+        let n_out = graph.outputs.len();
+        if n_out == 0 {
+            return Some(Vec::new());
+        }
+
+        let tape = InterpretedFn::from_graph(jacobian_wrt_param(&graph, idx)?);
+        let t_arr = [t];
+        let inputs = slot_inputs(&tape.signature, x, u, &t_arr, mem)?;
+
+        let mut values = vec![0.0; tape.n_out];
+        tape.call_into(&inputs, &mut values);
+        Some(values)
     }
 }
 
@@ -442,5 +606,106 @@ mod tests {
             Jacobian::Scalar(v) => assert!((v + 2.0).abs() < 1e-6, "got {v}"),
             other => panic!("expected Scalar, got {other:?}"),
         }
+    }
+
+    /// Build a fixed `RegionGraph` over `("x", nx), ("u", nu)` from a builder body.
+    fn op_from_xu(
+        nx: usize,
+        nu: usize,
+        build: impl Fn(&GraphBuilder, &[u32], &[u32], &mut Vec<u32>),
+    ) -> Operator {
+        let cell = std::cell::RefCell::new(Graph::new(InputSignature::from_named_sizes([
+            ("x", nx),
+            ("u", nu),
+        ])));
+        let outs = {
+            let gb = GraphBuilder::new(&cell);
+            let xs: Vec<u32> = (0..nx as u32).map(|i| gb.input(i)).collect();
+            let us: Vec<u32> = (0..nu as u32).map(|i| gb.input(nx as u32 + i)).collect();
+            let mut out = Vec::new();
+            build(&gb, &xs, &us, &mut out);
+            out
+        };
+        let mut g = cell.into_inner();
+        g.outputs = outs;
+        Operator::graph_only(RegionGraph::Fixed(g))
+    }
+
+    /// The rectangular query must handle `n_out != n_slot`, which the square
+    /// `Jacobian` representation behind `jacobian_wrt_state` cannot express.
+    #[test]
+    fn dense_jacobian_wrt_is_rectangular() {
+        // 3 states, 2 inputs, 1 output: y = x0*u0 + x1 + 2*u1  (x2 unused).
+        // ∂y/∂x = [u0, 1, 0]   (1x3)
+        // ∂y/∂u = [x0, 2]      (1x2)
+        let op = op_from_xu(3, 2, |gb, xs, us, out| {
+            let a = gb.mul(xs[0], us[0]);
+            let b = gb.add(a, xs[1]);
+            let two = gb.cst(2.0);
+            let c = gb.mul(two, us[1]);
+            out.push(gb.add(b, c));
+        });
+
+        let (x, u) = ([0.7, -1.3, 5.0], [2.5, 4.0]);
+
+        let (jx, rows, cols) = op.dense_jacobian_wrt("x", &x, &u, 0.0, &[]).unwrap();
+        assert_eq!((rows, cols), (1, 3));
+        for (got, want) in jx.iter().zip([u[0], 1.0, 0.0]) {
+            assert!((got - want).abs() < 1e-12, "d/dx: {got} != {want}");
+        }
+
+        let (ju, rows, cols) = op.dense_jacobian_wrt("u", &x, &u, 0.0, &[]).unwrap();
+        assert_eq!((rows, cols), (1, 2));
+        for (got, want) in ju.iter().zip([x[0], 2.0]) {
+            assert!((got - want).abs() < 1e-12, "d/du: {got} != {want}");
+        }
+    }
+
+    /// Row-major layout: entry `(i, j)` sits at `i * n_cols + j`.
+    #[test]
+    fn dense_jacobian_wrt_is_row_major() {
+        // 2 states, 1 input, 2 outputs: y0 = 3*x1, y1 = x0*u0.
+        // ∂y/∂x = [[0, 3], [u0, 0]]
+        let op = op_from_xu(2, 1, |gb, xs, us, out| {
+            let three = gb.cst(3.0);
+            out.push(gb.mul(three, xs[1]));
+            out.push(gb.mul(xs[0], us[0]));
+        });
+
+        let (x, u) = ([1.5, -2.0], [4.0]);
+        let (jx, rows, cols) = op.dense_jacobian_wrt("x", &x, &u, 0.0, &[]).unwrap();
+
+        assert_eq!((rows, cols), (2, 2));
+        let at = |i: usize, j: usize| jx[i * cols + j];
+        assert!((at(0, 0) - 0.0).abs() < 1e-12);
+        assert!((at(0, 1) - 3.0).abs() < 1e-12);
+        assert!((at(1, 0) - u[0]).abs() < 1e-12);
+        assert!((at(1, 1) - 0.0).abs() < 1e-12);
+    }
+
+    /// Opaque operators fall back to central differences, also rectangularly.
+    #[test]
+    fn dense_jacobian_wrt_opaque_fallback() {
+        // f(x, u) = [x0 * u0, -3 * u0]  →  ∂f/∂u = [[x0], [-3]] (2x1)
+        let op = Operator::opaque(Box::new(|x: &[f64], u: &[f64], _t, out: &mut Vec<f64>| {
+            out.clear();
+            out.push(x[0] * u[0]);
+            out.push(-3.0 * u[0]);
+        }));
+
+        let (ju, rows, cols) = op.dense_jacobian_wrt("u", &[2.0], &[5.0], 0.0, &[]).unwrap();
+        assert_eq!((rows, cols), (2, 1));
+        assert!((ju[0] - 2.0).abs() < 1e-6, "got {}", ju[0]);
+        assert!((ju[1] + 3.0).abs() < 1e-6, "got {}", ju[1]);
+    }
+
+    /// A `graph_only` operator carries a no-op closure; differencing it would
+    /// silently return zeros, so the fallback must refuse instead.
+    #[test]
+    fn dense_jacobian_wrt_refuses_unknown_slot_on_graph_only() {
+        let op = op_from_xu(1, 1, |gb, xs, us, out| {
+            out.push(gb.mul(xs[0], us[0]));
+        });
+        assert!(op.dense_jacobian_wrt("nope", &[1.0], &[1.0], 0.0, &[]).is_none());
     }
 }

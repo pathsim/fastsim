@@ -29,6 +29,7 @@ pub mod solvers;
 pub mod events;
 pub mod simulation;
 pub mod subsystem;
+pub mod linearize;
 pub mod ssa;
 #[cfg(any(feature = "python", test))]
 pub mod tracer;

@@ -35,6 +35,8 @@ use crate::utils::fastcell::FastCell;
 pub fn comparator(threshold: f64, span: (f64, f64)) -> BlockRef {
     let mut b = Block::default_block();
     b.type_name = "Comparator";
+    // Discontinuous switching characteristic: no linear model.
+    b.linearizable = false;
     // Algebraic feedthrough: the output is the instantaneous select
     // `(u >= threshold) ? hi : lo` (see `update_fn` / the `ops.alg` region below).
     // The ZeroCrossing registered further down is only a solver step-size hint,
@@ -92,6 +94,8 @@ pub fn comparator(threshold: f64, span: (f64, f64)) -> BlockRef {
 pub fn switch(n_inputs: usize, initial_state: Option<usize>) -> BlockRef {
     let mut b = Block::default_block();
     b.type_name = "Switch";
+    // Discontinuous switching characteristic: no linear model.
+    b.linearizable = false;
     // Mirror current len_fn: closed (state >= 0) → algebraic feedthrough, open → no feedthrough.
     // Captured at construction time from initial_state (matches Graph assembly behaviour).
     b.role = BlockRole { is_dyn: false, is_src: false, is_rec: false };
@@ -155,6 +159,8 @@ pub fn relay(threshold_up: f64, threshold_down: f64, value_up: f64, value_down: 
 
     let mut b = Block::default_block();
     b.type_name = "Relay";
+    // Discontinuous switching characteristic: no linear model.
+    b.linearizable = false;
     b.role = BlockRole { is_dyn: false, is_src: false, is_rec: false };
     b.len_fn = Some(Box::new(|_| 0));
 
@@ -243,6 +249,8 @@ fn counter_with_direction(name: &'static str, start: f64, threshold: f64,
 
     let mut b = Block::default_block();
     b.type_name = name;
+    // Integer valued, event driven output: no linear model.
+    b.linearizable = false;
     b.role = BlockRole { is_dyn: false, is_src: false, is_rec: false };
     b.len_fn = Some(Box::new(|_| 0));
 

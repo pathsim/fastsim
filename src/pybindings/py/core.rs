@@ -42,6 +42,36 @@ impl PyBlock {
         self.inner = other.inner.clone();
     }
 
+    /// Adopt `other`'s behaviour **in place**, preserving this block's identity.
+    ///
+    /// Used when a constructor parameter is reassigned at runtime
+    /// (`amp.gain = 10`): the shim rebuilds the block from its factory, but a
+    /// plain `_init_from` would only repoint the Python handle at the new `Rc`
+    /// while the `Simulation` and every `Connection` keep holding the old one —
+    /// the change would read back correctly and have no effect on the run.
+    /// Swapping the cell contents instead keeps every existing reference valid.
+    ///
+    /// The connection layout (register sizes resolved when the diagram was
+    /// wired) and the integration engine (the live state) belong to the block's
+    /// *place in the system*, not to its parameters, so they are carried over
+    /// rather than taken from the freshly built block.
+    fn _adopt(&self, other: &PyBlock) {
+        if Rc::ptr_eq(&self.inner, &other.inner) {
+            return;
+        }
+
+        let this = self.inner.borrow_mut();
+        let fresh = other.inner.borrow_mut();
+
+        std::mem::swap(this, fresh);
+
+        // `this` now holds the freshly built behaviour, `fresh` the old block.
+        // Take back what describes this block's place in the system.
+        std::mem::swap(&mut this.inputs, &mut fresh.inputs);
+        std::mem::swap(&mut this.outputs, &mut fresh.outputs);
+        std::mem::swap(&mut this.engine, &mut fresh.engine);
+    }
+
     fn __getitem__(&self, key: &Bound<'_, PyAny>) -> PyResult<PyPortRef> {
         if let Ok(idx) = key.extract::<usize>() {
             return Ok(PyPortRef { inner: PortReference::new(self.inner.clone(), Some(vec![Port::Index(idx)])) });
@@ -393,6 +423,23 @@ impl PySolver {
 /// Reference to a block with specific port indices.
 pub struct PyPortRef {
     pub inner: PortReference,
+}
+
+#[pymethods]
+impl PyPortRef {
+    /// Current values at the referenced output ports.
+    fn get_outputs(&self) -> Vec<f64> {
+        self.inner.get_outputs()
+    }
+
+    /// Current values at the referenced input ports.
+    fn get_inputs(&self) -> Vec<f64> {
+        self.inner.get_inputs()
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
 }
 
 // ======================================================================================
