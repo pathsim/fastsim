@@ -437,7 +437,7 @@ class ButterworthBandpassFilter(_ShimBlock):
     Direct implementation of a bandpass butterworth filter block.
 
     Follows the same structure as the 'StateSpace' block in the
-    'pathsim.blocks' module. The numerator and denominator of the
+    'fastsim.blocks' module. The numerator and denominator of the
     filter transfer function are generated and then the transfer
     function is realized as a state space model.
 
@@ -462,7 +462,7 @@ class ButterworthBandstopFilter(_ShimBlock):
     Direct implementation of a bandstop butterworth filter block.
 
     Follows the same structure as the 'StateSpace' block in the
-    'pathsim.blocks' module. The numerator and denominator of the
+    'fastsim.blocks' module. The numerator and denominator of the
     filter transfer function are generated and then the transfer
     function is realized as a state space model.
 
@@ -487,7 +487,7 @@ class ButterworthHighpassFilter(_ShimBlock):
     Direct implementation of a high pass butterworth filter block.
 
     Follows the same structure as the 'StateSpace' block in the
-    'pathsim.blocks' module. The numerator and denominator of the
+    'fastsim.blocks' module. The numerator and denominator of the
     filter transfer function are generated and then the transfer
     function is realized as a state space model.
 
@@ -512,7 +512,7 @@ class ButterworthLowpassFilter(_ShimBlock):
     Direct implementation of a low pass butterworth filter block.
 
     Follows the same structure as the 'StateSpace' block in the
-    'pathsim.blocks' module. The numerator and denominator of the
+    'fastsim.blocks' module. The numerator and denominator of the
     filter transfer function are generated and then the transfer
     function is realized as a state space model.
 
@@ -691,9 +691,35 @@ class ClockSource(_ShimBlock):
 
 class CoSimulationFMU(_ShimBlock):
     """
-            CoSimulationFMU block
+    Co-Simulation FMU block (FMI 3.0).
 
+    Wraps an imported Functional Mock-up Unit (FMU) exported for **Co-Simulation**
+    as a native fastsim block. The FMU carries its own solver and is advanced one
+    communication step at a time: at each master step the block writes its inputs to
+    the FMU's input variables, calls the FMU's ``doStep`` over the communication
+    interval, and reads the FMU's outputs back onto its output ports. This lets a
+    third-party model (Modelica, Simulink, etc.) participate in a fastsim diagram
+    without re-implementing it.
 
+    The block is discrete in time (it exchanges data on the communication grid set
+    by ``dt``); between exchanges the FMU integrates internally with its own step
+    size. Input/output ports are derived from the FMU's model description.
+
+    Parameters
+    ----------
+    fmu_path : str
+        filesystem path to the ``.fmu`` archive to load (a Co-Simulation FMU)
+    instance_name : str, optional
+        instance name passed to the FMU at instantiation (default
+        ``"fmu_instance"``); used in FMU log messages
+    start_values : dict, optional
+        mapping of FMU variable name to initial value, applied during
+        initialization before the first step (default: the FMU's own defaults)
+    dt : float, optional
+        communication step size (seconds) between master and FMU. ``None`` (default)
+        uses the simulation's step; otherwise the FMU is advanced on this fixed grid
+    verbose : bool, optional
+        forward the FMU's internal log messages to stdout (default ``False``)
     """
     _factory_name = "CoSimulationFMU"
     _param_defaults = {'fmu_path': None, 'instance_name': 'fmu_instance', 'start_values': None, 'dt': None, 'verbose': False}
@@ -1401,7 +1427,7 @@ class DynamicalFunction(_JitShimBlock):
     .. code-block:: python
 
         import numpy as np
-        from pathsim.blocks import DynamicalFunction
+        from fastsim.blocks import DynamicalFunction
 
         f_0 = 100
 
@@ -1416,7 +1442,7 @@ class DynamicalFunction(_JitShimBlock):
     .. code-block:: python
 
         import numpy as np
-        from pathsim.blocks import DynamicalFunction
+        from fastsim.blocks import DynamicalFunction
 
         f_0 = 100
 
@@ -1424,7 +1450,7 @@ class DynamicalFunction(_JitShimBlock):
         def vco(u, t):
             return np.sin(2*np.pi*f_0*u*t)
 
-        #'vco' is now a PathSim block
+        #'vco' is now a FastSim block
 
 
     Parameters
@@ -1729,7 +1755,7 @@ class Function(_JitShimBlock):
 
     .. code-block:: python
 
-        from pathsim.blocks import Function
+        from fastsim.blocks import Function
 
         def f(a, b, c):
             return a**2, a*b, b/c
@@ -1756,13 +1782,13 @@ class Function(_JitShimBlock):
         b/c  -> outputs[2]
 
     Because the `Function` block only has a single argument, it can be
-    used to decorate a function and make it a `PathSim` block. This might
+    used to decorate a function and make it a `FastSim` block. This might
     be handy in some cases to keep definitions concise and localized
     in the code:
 
     .. code-block:: python
 
-        from pathsim.blocks import Function
+        from fastsim.blocks import Function
 
         #does the same as the definition above
 
@@ -1770,7 +1796,7 @@ class Function(_JitShimBlock):
         def fn(a, b, c):
             return a**2, a*b, b/c
 
-        #'fn' is now a PathSim block
+        #'fn' is now a FastSim block
 
 
     Parameters
@@ -2250,9 +2276,7 @@ class Mod(_ShimBlock):
 
 class ModelExchangeFMU(_ShimBlock):
     """
-            ModelExchangeFMU block
-
-
+    ModelExchangeFMU block
     """
     _factory_name = "ModelExchangeFMU"
     _param_defaults = {'fmu_path': None, 'instance_name': 'fmu_instance', 'start_values': None, 'tolerance': 1e-10, 'verbose': False}
@@ -2832,7 +2856,7 @@ class Relay(_ShimBlock):
 
     .. code-block:: python
 
-        from pathsim.blocks import Relay
+        from fastsim.blocks import Relay
 
         thermostat = Relay(
             threshold_up=21.0,
@@ -3145,7 +3169,7 @@ class Source(_JitShimBlock):
 
     .. code-block:: python
 
-        from pathsim.blocks import Source
+        from fastsim.blocks import Source
 
         src = Source(lambda t : t)
 
@@ -3154,7 +3178,7 @@ class Source(_JitShimBlock):
     .. code-block:: python
 
         import numpy as np
-        from pathsim.blocks import Source
+        from fastsim.blocks import Source
 
         #some parameter
         omega = 100
@@ -3166,14 +3190,14 @@ class Source(_JitShimBlock):
         src = Source(f)
 
     Because the `Source` block only has a single argument, it can be
-    used to decorate a function and make it a `PathSim` block. This might
+    used to decorate a function and make it a `FastSim` block. This might
     be handy in some cases to keep definitions concise and localized
     in the code:
 
     .. code-block:: python
 
         import numpy as np
-        from pathsim.blocks import Source
+        from fastsim.blocks import Source
 
         #does the same as the definition above
 
@@ -3182,7 +3206,7 @@ class Source(_JitShimBlock):
             omega = 100
             return np.sin(omega * t)
 
-        #'src' is now a PathSim block
+        #'src' is now a FastSim block
 
 
     Parameters
@@ -3301,6 +3325,12 @@ class StateSpace(_ShimBlock):
         real valued state space matrices
     initial_value : array_like, None
         initial state / initial condition
+    state_labels, input_labels, output_labels : list[str], None
+        optional identifiers for the states, inputs and outputs of the model.
+        Models assembled by 'Simulation.to_statespace' carry the block names
+        they were built from here. These are also exactly the 'states',
+        'inputs' and 'outputs' keyword arguments of 'control.StateSpace', so
+        the model hands over to python-control without an adapter.
 
     Attributes
     ----------
@@ -3354,7 +3384,7 @@ class StepSource(_ShimBlock):
 
     .. code-block:: python
 
-        from pathsim.blocks import StepSource
+        from fastsim.blocks import StepSource
 
         #default, starts at 0, jumps to 1
         stp = StepSource()
@@ -3364,7 +3394,7 @@ class StepSource(_ShimBlock):
 
     .. code-block:: python
 
-        from pathsim.blocks import StepSource
+        from fastsim.blocks import StepSource
 
         #starts at 0, jumps to 1 at 1, jumps to -1 at 2 and jumps back to 0 at 3
         stp = StepSource(amplitude=[1, -1, 0], tau=[1, 2, 3])
@@ -3375,7 +3405,7 @@ class StepSource(_ShimBlock):
     .. code-block:: python
 
         import numpy as np
-        from pathsim.blocks import StepSource
+        from fastsim.blocks import StepSource
 
         #some random time series arrays
         times, data = np.linspace(0, 100, 1000), np.random.rand(1000)
@@ -3774,7 +3804,7 @@ class Wrapper(_JitShimBlock):
 
     .. code-block:: python
 
-        from pathsim.blocks import Wrapper
+        from fastsim.blocks import Wrapper
 
         #function to be wrapped
         def func(a, b, c):
@@ -3788,7 +3818,7 @@ class Wrapper(_JitShimBlock):
 
     .. code-block:: python
 
-        from pathsim.blocks import Wrapper
+        from fastsim.blocks import Wrapper
 
         @Wrapper.dec(T=0.1)
         def wrp(a, b, c):

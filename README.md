@@ -241,8 +241,10 @@ commercial product**, requires a commercial license.
 The generated C code is "Output" under the license and carries the same
 noncommercial limitation; each generated file is stamped with this notice.
 
-For commercial licensing — including shipping fastsim-generated C in a product —
-see **[COMMERCIAL.md](COMMERCIAL.md)** or contact **info@pathsim.org**.
+Commercial licenses are flat per company, per year — unlimited users, CI, and
+automated agents, including royalty-free rights to ship generated C in your
+products. See **[COMMERCIAL.md](COMMERCIAL.md)** for pricing or contact
+**info@pathsim.org**.
 
 Need a fully open-source option? The pure-Python implementation,
 [pathsim](https://github.com/pathsim), is available separately under the MIT

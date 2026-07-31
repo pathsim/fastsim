@@ -194,6 +194,20 @@ class Simulation:
         code generator is built into
         the ``fastsim`` extension under the ``codegen`` feature; if the wheel was
         built without it, ``to_c`` raises ``AttributeError``.
+
+        The generated C is self-contained C99 (libm only), reentrant by
+        construction (all state lives in the instance struct), and every
+        extern symbol is prefixed with the model name, so several generated
+        models link into one binary.
+
+        Example
+        -------
+        .. code-block:: python
+
+            files = sim.to_c("decay")   # {"decay.h": "...", "decay.c": "..."}
+            for fname, src in files.items():
+                with open(fname, "w") as f:
+                    f.write(src)
         """
         return self.__dict__["_sim"].to_c(name, **options)
 
@@ -214,6 +228,13 @@ class Simulation:
         (``"rk4"``), ``numeric`` / ``reductions`` / ``structure`` / ``layout``
         (as in :meth:`to_c`), ``atol`` (1e-9), ``rtol`` (1e-6), ``keep_build``
         (keep the temp build directory for inspection).
+
+        Example
+        -------
+        .. code-block:: python
+
+            report = sim.verify_c("decay", duration=2.0, dt=1e-3)
+            assert report["passed"], (report["worst_state"], report["max_scaled_error"])
         """
         return self.__dict__["_sim"].verify_c(name, **options)
 
@@ -676,7 +697,34 @@ class Simulation:
         return self.__dict__["_sim"].reset(time)
 
     def run(self, duration=10.0, reset=False, adaptive=True):
-        """Run the simulation for a given duration."""
+        """Run the simulation for a given duration of simulation time.
+
+        Advances the model from the current time by `duration`, evaluating
+        events and sampling the recording blocks (Scope, Spectrum, ...) along
+        the way. Repeated calls continue where the previous run ended, so a
+        long simulation can be split into segments with parameter mutations
+        in between — block parameters set between runs take effect
+        immediately while the recorded state is preserved.
+
+        Parameters
+        ----------
+        duration : float
+            simulation time to advance, in time units (default 10.0)
+        reset : bool
+            reset blocks and simulation time to zero before running
+            (default False)
+        adaptive : bool
+            let adaptive solvers control the timestep through their embedded
+            error estimate; with ``False`` the solver steps at the fixed
+            ``dt`` (default True)
+
+        Example
+        -------
+        .. code-block:: python
+
+            sim.run(30)
+            time, [x] = scope.read()
+        """
         return self.__dict__["_sim"].run(duration, reset, adaptive)
 
     def run_begin(self, reset=False, duration=10.0):
@@ -695,7 +743,28 @@ class Simulation:
         return self.__dict__["_sim"].run_end()
 
     def run_realtime(self, duration=10.0, reset=False, adaptive=True, tickrate=30.0, speed=1.0, func_callback=None):
-        """Run synchronized to wall-clock time with optional speed factor."""
+        """Run synchronized to wall-clock time with an optional speed factor.
+
+        Advances the engine so simulation time tracks wall-clock time scaled
+        by `speed` (1.0 = real time, 2.0 = twice as fast), invoking
+        `func_callback` at roughly `tickrate` calls per wall-clock second —
+        for live dashboards, interactive demos, and soft-realtime setups.
+
+        Parameters
+        ----------
+        duration : float
+            simulation time to advance (default 10.0)
+        reset : bool
+            reset before running (default False)
+        adaptive : bool
+            allow adaptive stepping within each tick (default True)
+        tickrate : float
+            callback invocations per wall-clock second (default 30.0)
+        speed : float
+            simulation speed relative to wall clock (default 1.0)
+        func_callback : callable, optional
+            called once per tick, e.g. to read scopes or inject mutations
+        """
         return self.__dict__["_sim"].run_realtime(duration, reset, adaptive, tickrate, speed, func_callback)
 
     def run_until(self, target_time, end_time, adaptive=True):
@@ -705,7 +774,19 @@ class Simulation:
         return self.__dict__["_sim"].run_until(target_time, end_time, adaptive)
 
     def steadystate(self, reset):
-        """Find the steady-state (DC operating point) of the system by root-finding on the residual rather than time integration."""
+        """Find the steady state (DC operating point) of the system.
+
+        Solves for the operating point by root-finding on the assembled
+        residual instead of integrating in time — orders of magnitude faster
+        than letting transients decay for stiff or slowly settling systems.
+        On success the engine state holds the operating point: block outputs,
+        states and scope samples reflect the steady solution.
+
+        Parameters
+        ----------
+        reset : bool
+            reset blocks to their initial state before solving
+        """
         return self.__dict__["_sim"].steadystate(reset)
 
     def stop(self):
@@ -736,6 +817,15 @@ class Simulation:
         The optional `start_time` / `stop_time` / `tolerance` / `step_size`
         populate `<DefaultExperiment>`; `instantiation_token` overrides the
         default `{fastsim-<id>}`.
+
+        Example
+        -------
+        .. code-block:: python
+
+            sim.to_fmu("decay.fmu", name="decay", stop_time=10.0)
+
+        The written FMU imports into any FMI 3.0 tool that can build source
+        FMUs; the importer compiles the shipped C on its own platform.
         """
         return self.__dict__["_sim"].to_fmu(path, name, start_time=start_time, stop_time=stop_time, tolerance=tolerance, step_size=step_size, instantiation_token=instantiation_token)
 

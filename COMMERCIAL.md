@@ -4,9 +4,9 @@ fastsim is distributed under the [PolyForm Noncommercial License 1.0.0](LICENSE)
 That license permits **any noncommercial use** — research, teaching, academic
 work, evaluation, personal and hobby projects — at no cost. **Commercial use
 requires a commercial license.** This page explains, in plain language, where
-that line falls and what a commercial license covers.
+that line falls, what a commercial license covers, and what it costs.
 
-For a quote or to discuss terms, contact **info@pathsim.org**.
+To order a license or discuss terms, contact **info@pathsim.org**.
 
 ---
 
@@ -14,7 +14,8 @@ For a quote or to discuss terms, contact **info@pathsim.org**.
 
 You need a commercial license if you use fastsim in the course of running a
 business or delivering a commercial product or service. Two distinct scopes
-matter, because they are priced and governed separately:
+matter, because the license governs them separately (one commercial license
+covers both):
 
 ### 1. Engine use (running the simulator)
 
@@ -54,6 +55,42 @@ so you can compile it into, and distribute it as part of, a commercial product.
 - Evaluating fastsim — including generating and compiling C — to decide whether
   to adopt it commercially.
 - Contributing to fastsim itself.
+
+---
+
+## Pricing
+
+fastsim is licensed **per company, not per seat**. One flat annual license
+covers your entire company — every engineer, every CI runner, every automated
+or AI-agent-driven workflow. No named users, no license servers, no counting.
+
+| Tier | Price per year | Who it's for |
+|------|----------------|--------------|
+| **Startup** | $1,500 / €1,250 | Companies with fewer than 25 employees |
+| **Business** | $6,000 / €5,000 | Companies with fewer than 250 employees |
+| **Enterprise / OEM** | contact us | 250+ employees, corporate groups, redistribution |
+
+Every license includes:
+
+- **Unlimited use company-wide** — all users, machines, CI pipelines, and
+  automated agents of one legal entity.
+- **Royalty-free Output rights** — ship fastsim-generated C code and FMUs in
+  your own products, with the noncommercial notice lifted. Products you shipped
+  during the license term stay licensed after it ends.
+- **Updates** — all releases published during the license term.
+- **Email support** — direct access to the developer, best effort.
+
+The tier is determined by headcount at the start of each annual term. A
+"company" is a single legal entity; affiliates and subsidiaries need their own
+license or an enterprise agreement. Redistributing the engine or offering the
+code generator itself as part of a product or service requires OEM terms.
+
+Integration work beyond email support — custom blocks, solver tuning,
+embedded/HIL bring-up, Simulink migration — is available separately as
+consulting.
+
+To order, email **info@pathsim.org** with your company name and tier; you'll
+receive an order form and the license terms.
 
 ---
 

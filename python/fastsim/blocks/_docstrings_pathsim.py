@@ -1,4 +1,5 @@
-# Block docstrings mirrored 1:1 from pathsim — DO NOT EDIT BY HAND.
+# Block docstrings mirrored from pathsim (self-references rewritten to
+# fastsim) — DO NOT EDIT BY HAND.
 # Regenerate from pathsim source via scripts/extract_docstrings.py.
 
 DOCS = {
@@ -313,7 +314,7 @@ f_max : float
     'ButterworthBandpassFilter': """Direct implementation of a bandpass butterworth filter block.
 
 Follows the same structure as the 'StateSpace' block in the 
-'pathsim.blocks' module. The numerator and denominator of the 
+'fastsim.blocks' module. The numerator and denominator of the 
 filter transfer function are generated and then the transfer 
 function is realized as a state space model. 
 
@@ -327,7 +328,7 @@ n : int
     'ButterworthBandstopFilter': """Direct implementation of a bandstop butterworth filter block.
 
 Follows the same structure as the 'StateSpace' block in the 
-'pathsim.blocks' module. The numerator and denominator of the 
+'fastsim.blocks' module. The numerator and denominator of the 
 filter transfer function are generated and then the transfer 
 function is realized as a state space model. 
 
@@ -341,7 +342,7 @@ n : int
     'ButterworthHighpassFilter': """Direct implementation of a high pass butterworth filter block.
 
 Follows the same structure as the 'StateSpace' block in the 
-'pathsim.blocks' module. The numerator and denominator of the 
+'fastsim.blocks' module. The numerator and denominator of the 
 filter transfer function are generated and then the transfer 
 function is realized as a state space model. 
 
@@ -355,7 +356,7 @@ n : int
     'ButterworthLowpassFilter': """Direct implementation of a low pass butterworth filter block.
 
 Follows the same structure as the 'StateSpace' block in the 
-'pathsim.blocks' module. The numerator and denominator of the 
+'fastsim.blocks' module. The numerator and denominator of the 
 filter transfer function are generated and then the transfer 
 function is realized as a state space model. 
 
@@ -986,7 +987,7 @@ at the output.
 .. code-block:: python
     
     import numpy as np
-    from pathsim.blocks import DynamicalFunction
+    from fastsim.blocks import DynamicalFunction
     
     f_0 = 100
 
@@ -1001,7 +1002,7 @@ Using it as a decorator also works:
 .. code-block:: python
     
     import numpy as np
-    from pathsim.blocks import DynamicalFunction
+    from fastsim.blocks import DynamicalFunction
     
     f_0 = 100
     
@@ -1009,7 +1010,7 @@ Using it as a decorator also works:
     def vco(u, t):
         return np.sin(2*np.pi*f_0*u*t)
 
-    #'vco' is now a PathSim block 
+    #'vco' is now a FastSim block 
 
 
 Parameters
@@ -1195,7 +1196,7 @@ consider the function:
 
 .. code-block:: python
 
-    from pathsim.blocks import Function
+    from fastsim.blocks import Function
 
     def f(a, b, c):
         return a**2, a*b, b/c
@@ -1222,13 +1223,13 @@ output channels of the block in the same way:
     b/c  -> outputs[2]
 
 Because the `Function` block only has a single argument, it can be 
-used to decorate a function and make it a `PathSim` block. This might 
+used to decorate a function and make it a `FastSim` block. This might 
 be handy in some cases to keep definitions concise and localized 
 in the code:
 
 .. code-block:: python
 
-    from pathsim.blocks import Function
+    from fastsim.blocks import Function
 
     #does the same as the definition above
         
@@ -1236,7 +1237,7 @@ in the code:
     def fn(a, b, c):
         return a**2, a*b, b/c
 
-    #'fn' is now a PathSim block
+    #'fn' is now a FastSim block
 
 
 Parameters
@@ -1926,7 +1927,7 @@ Basic thermostat that turns heater on below 19°C, off above 21°C:
 
 .. code-block:: python
 
-    from pathsim.blocks import Relay
+    from fastsim.blocks import Relay
     
     thermostat = Relay(
         threshold_up=21.0, 
@@ -2139,7 +2140,7 @@ For example a ramp:
 
 .. code-block:: python
 
-    from pathsim.blocks import Source
+    from fastsim.blocks import Source
 
     src = Source(lambda t : t)
 
@@ -2148,7 +2149,7 @@ or a simple sinusoid with some frequency:
 .. code-block:: python
     
     import numpy as np
-    from pathsim.blocks import Source
+    from fastsim.blocks import Source
 
     #some parameter
     omega = 100
@@ -2160,14 +2161,14 @@ or a simple sinusoid with some frequency:
     src = Source(f)
  
 Because the `Source` block only has a single argument, it can be 
-used to decorate a function and make it a `PathSim` block. This might 
+used to decorate a function and make it a `FastSim` block. This might 
 be handy in some cases to keep definitions concise and localized 
 in the code:
 
 .. code-block:: python
     
     import numpy as np
-    from pathsim.blocks import Source
+    from fastsim.blocks import Source
 
     #does the same as the definition above
         
@@ -2176,7 +2177,7 @@ in the code:
         omega = 100
         return np.sin(omega * t)
 
-    #'src' is now a PathSim block
+    #'src' is now a FastSim block
 
 
 Parameters
@@ -2336,6 +2337,12 @@ A, B, C, D : array_like
     real valued state space matrices
 initial_value : array_like, None
     initial state / initial condition
+state_labels, input_labels, output_labels : list[str], None
+    optional identifiers for the states, inputs and outputs of the model.
+    Models assembled by 'Simulation.to_statespace' carry the block names
+    they were built from here. These are also exactly the 'states',
+    'inputs' and 'outputs' keyword arguments of 'control.StateSpace', so
+    the model hands over to python-control without an adapter.
 
 Attributes
 ----------
@@ -2366,7 +2373,7 @@ This is how to use the source as a unit step source:
 
 .. code-block:: python
 
-    from pathsim.blocks import StepSource
+    from fastsim.blocks import StepSource
     
     #default, starts at 0, jumps to 1
     stp = StepSource()
@@ -2376,7 +2383,7 @@ And this is how to configure it with multiple consecutive steps:
 
 .. code-block:: python
 
-    from pathsim.blocks import StepSource
+    from fastsim.blocks import StepSource
     
     #starts at 0, jumps to 1 at 1, jumps to -1 at 2 and jumps back to 0 at 3
     stp = StepSource(amplitude=[1, -1, 0], tau=[1, 2, 3])
@@ -2387,7 +2394,7 @@ Similarly implementing measured time series data via zoh:
 .. code-block:: python
 
     import numpy as np
-    from pathsim.blocks import StepSource
+    from fastsim.blocks import StepSource
     
     #some random time series arrays
     times, data = np.linspace(0, 100, 1000), np.random.rand(1000)
@@ -2665,7 +2672,7 @@ a function to be wrapped and pass it to the block initializer:
 
 .. code-block:: python
     
-    from pathsim.blocks import Wrapper
+    from fastsim.blocks import Wrapper
     
     #function to be wrapped
     def func(a, b, c):
@@ -2679,7 +2686,7 @@ in some situations:
 
 .. code-block:: python
     
-    from pathsim.blocks import Wrapper
+    from fastsim.blocks import Wrapper
     
     @Wrapper.dec(T=0.1)
     def wrp(a, b, c):

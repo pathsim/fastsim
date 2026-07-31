@@ -53,6 +53,20 @@ def jit(func, n_x=None):
     n_x : int, optional
         Input dimension for eager tracing.  If omitted, tracing is
         deferred to the first call.
+
+    Returns
+    -------
+    callable
+        Compiled function with the same signature; returns a numpy array.
+
+    Example
+    -------
+    .. code-block:: python
+
+        f = jit(lorenz)              # lazy: traces on the first call
+        y = f([1.0, 1.0, 1.0], 0.0)
+
+        f = jit(lorenz, n_x=3)       # eager: traces immediately
     """
     return _jit_compile(func, n_x=n_x)
 
@@ -74,6 +88,20 @@ def jacobian(func, n_x=None):
         Must return a list/array of floats.
     n_x : int, optional
         Input dimension for eager tracing.
+
+    Returns
+    -------
+    callable
+        Function with the same signature returning the dense Jacobian
+        :math:`J_{ij} = \\partial f_i / \\partial x_j` as an ``(n, n)``
+        numpy array.
+
+    Example
+    -------
+    .. code-block:: python
+
+        jac = jacobian(lorenz)
+        J = jac([1.0, 1.0, 1.0], 0.0)   # (3, 3) numpy array
     """
     return _jit_jacobian(func, n_x=n_x)
 
