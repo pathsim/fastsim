@@ -1,6 +1,17 @@
-# Block docstrings mirrored from pathsim (self-references rewritten to
-# fastsim) — DO NOT EDIT BY HAND.
-# Regenerate from pathsim source via scripts/extract_docstrings.py.
+"""Block docstrings — the single, hand-maintained registry.
+
+One entry per public block, applied to the generated and hand-written block
+classes by ``blocks/__init__.py`` and embedded into ``_generated.py`` by
+``scripts/gen_blocks.py`` (re-run it after editing here).
+
+The entries were originally seeded from pathsim (fastsim is a drop-in
+replacement, so the block semantics match) with self-references rewritten to
+fastsim. They are OWNED by fastsim now: edit freely, extend with
+fastsim-specific behaviour (JIT, codegen), and keep the numpydoc-ish style —
+sections for functionality, math, parameters and attributes — so
+``Block.info()`` stays uniform. ``scripts/extract_docstrings.py`` remains only
+as a bootstrap helper to seed an entry when a new pathsim block gets ported.
+"""
 
 DOCS = {
     'ADC': """Models an ideal Analog-to-Digital Converter (ADC).
@@ -40,10 +51,7 @@ tau : float, optional
 
 
 Attributes
-----------
-events : list[Schedule]
-    Internal scheduled event responsible for periodic sampling and conversion.
-""",
+----------""",
     'Abs': """Absolute value operator block.
 
 This block supports vector inputs. This is the operation it does:
@@ -53,10 +61,7 @@ This block supports vector inputs. This is the operation it does:
     \\vec{y} = \\vert| \\vec{u} \\vert| 
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Adder': """Summs / adds up all input signals to a single output signal (MISO)
 
 This is how it works in the default case
@@ -104,13 +109,38 @@ operations : str, optional
 
 
 Attributes
+----------""",
+    'AlgebraicConstraint': """Algebraic constraint block — solve ``F(x, u) = 0`` for ``x``.
+
+Solves a square nonlinear algebraic system
+
+.. math::
+
+    F(x, u) = 0
+
+for the unknown :math:`x` at every evaluation: a warmstarted Newton with
+:math:`\\partial F / \\partial x` from auto-differentiation of the traced
+``residual``, factored with the persistent sparse linear solver, emitting the
+converged :math:`x`. It is the standalone counterpart of the inner
+``z``-elimination in :class:`SemiExplicitDAE` — the same Newton core exposed as
+its own block.
+
+Use it for instantaneous algebraic relations: chemical equilibrium, flash /
+vapour–liquid equilibrium, steady-state operating points, implicit constitutive
+laws. Feeding it a zeroed rate ``F := f(x, u)`` recovers the quasi-steady-state
+(pseudo-steady-state) approximation, without the name prescribing it.
+
+Inputs ``u`` flow in dynamically through the block ports; no input count is
+declared, identical to every other traced block.
+
+Parameters
 ----------
-_ops : dict
-    dict that maps string operations to numerical
-_ops_array : array_like
-    operations converted to array
-op_alg : Operator
-    internal algebraic operator
+residual : callable
+    square residual ``residual(x, u) -> F`` for the unknown ``x`` (shape
+    ``(n,)``) and the dynamically-wired inputs ``u``; requires
+    ``len(F) == len(x0)``
+x0 : array_like
+    initial guess / warmstart seed; its length fixes ``n``
 """,
     'Alias': """Signal alias / pass-through block.
 
@@ -124,10 +154,7 @@ This is useful for signal renaming in model composition.
 This block supports vector inputs.
 
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'AllpassFilter': """Direct implementation of a first order allpass filter, or a cascade 
 of n 1st order allpass filters
 
@@ -177,10 +204,7 @@ gain : float
 
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'AntiWindupPID': """Proportional-Integral-Differentiation (PID) controller with anti-windup mechanism (back-calculation).
 
 Anti-windup mechanisms are needed when the magnitude of the control signal
@@ -256,10 +280,7 @@ This block supports vector inputs. This is the operation it does:
     \\vec{y} = \\arctan(\\vec{u}) 
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Atan2': """Two-argument arctangent block.
 
 Computes the four-quadrant arctangent of two inputs:
@@ -275,9 +296,66 @@ The first input is the y-coordinate, the second is the x-coordinate,
 matching the convention of ``numpy.arctan2(y, x)``.
 
 Attributes
+----------""",
+    'BVP1D': """Boundary-value problem block (native ``scipy.solve_bvp``).
+
+Solves a first-order two-point boundary-value problem
+
+.. math::
+
+    y'(x) = f(x, y, p, u), \\quad \\mathrm{bc}(y(a), y(b), p, u) = 0
+
+natively at every evaluation with a Kierzenka–Shampine collocation solver
+(4th-order Lobatto-IIIa / Simpson collocation with residual-based mesh
+refinement), the Newton Jacobian assembled from auto-differentiation of the
+traced ``fun``/``bc``/``icond``.
+
+Optionally with free parameters :math:`p` (extra unknowns fixed by extra
+conditions — eigenvalues, unknown fluxes or lengths) and interior conditions
+``icond(y@ports, p, u) = 0`` imposed at arbitrary ``x_ports`` (multipoint BVP,
+beyond scipy). Boundary and parameter data flow in through the block inputs
+``u`` and are re-read every evaluation; the adapted mesh and parameters are
+warmstarted across evaluations. Inputs flow in dynamically through the block
+ports — no input count is declared.
+
+The block output is the solution sampled at the fixed query points ``x_out``
+(4th-order Hermite interpolation), followed by the converged free parameters
+``p``; use :meth:`solution` and :meth:`parameters` to read them back in shape.
+
+Parameters
 ----------
-op_alg : Operator
-    internal algebraic operator
+fun : callable
+    first-order RHS ``fun(x, y, p, u) -> y'`` for a single point (``x``
+    scalar, ``y`` shape ``(n_eq,)``, ``p`` shape ``(n_params,)``)
+bc : callable
+    two-point boundary conditions ``bc(ya, yb, p, u) -> residual``
+n_eq : int
+    number of first-order equations
+domain : tuple, optional
+    spatial interval ``(a, b)`` (default ``(0, 1)``)
+n_mesh : int, optional
+    initial number of mesh nodes (default 11)
+initial : callable or array_like, optional
+    initial guess ``initial(x) -> (n_eq, n_mesh)`` or an array; zeros if omitted
+x_out : array_like, optional
+    output sample points (defaults to the initial mesh)
+tol : float, optional
+    collocation residual tolerance (default 1e-6)
+n_params : int, optional
+    number of unknown free parameters ``p`` (default 0)
+p0 : array_like, optional
+    initial parameter guess (defaults to zeros)
+x_ports : array_like, optional
+    interior-condition locations (multipoint BVP)
+interior_conditions : callable, optional
+    ``icond(y_ports, p, u) -> residual`` at ``x_ports``; required iff
+    ``x_ports`` is given. Well-posed when
+    ``len(bc) + len(icond) == n_eq + n_params``.
+
+Attributes
+----------
+x : ndarray
+    output sample points (``x_out``)
 """,
     'Backlash': """Backlash (mechanical play) element.
 
@@ -412,16 +490,12 @@ sig_white : float
 sampling_period : float, None
     time between phase noise samples. If None,
     noise is sampled every timestep (default is 0.1)
+seed : int, None
+    seed of the deterministic noise streams. None draws one entropy sample
+    at construction (independent instances, fixed thereafter)
 
 Attributes
-----------
-noise_1 : float
-    internal noise value for white phase noise
-noise_2 : float
-    internal noise value for cumulative phase noise
-events : list[Schedule]
-    scheduled event for periodic sampling (only if sampling_period is set)
-""",
+----------""",
     'ChirpSource': """Alias for ChirpPhaseNoiseSource.
 
 .. deprecated:: 1.0.0
@@ -442,10 +516,7 @@ max_val : float, array_like
     maximum clipping value
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Clock': """Alias for ClockSource.
 
 .. deprecated:: 1.0.0
@@ -463,9 +534,36 @@ tau : float
     clock delay
 
 Attributes
+----------""",
+    'CoSimulationFMU': """Co-Simulation FMU block (FMI 3.0).
+
+Wraps an imported Functional Mock-up Unit (FMU) exported for **Co-Simulation**
+as a native fastsim block. The FMU carries its own solver and is advanced one
+communication step at a time: at each master step the block writes its inputs to
+the FMU's input variables, calls the FMU's ``doStep`` over the communication
+interval, and reads the FMU's outputs back onto its output ports. This lets a
+third-party model (Modelica, Simulink, etc.) participate in a fastsim diagram
+without re-implementing it.
+
+The block is discrete in time (it exchanges data on the communication grid set
+by ``dt``); between exchanges the FMU integrates internally with its own step
+size. Input/output ports are derived from the FMU's model description.
+
+Parameters
 ----------
-events : list[Schedule]
-    internal scheduled event list 
+fmu_path : str
+    filesystem path to the ``.fmu`` archive to load (a Co-Simulation FMU)
+instance_name : str, optional
+    instance name passed to the FMU at instantiation (default
+    ``"fmu_instance"``); used in FMU log messages
+start_values : dict, optional
+    mapping of FMU variable name to initial value, applied during
+    initialization before the first step (default: the FMU's own defaults)
+dt : float, optional
+    communication step size (seconds) between master and FMU. ``None`` (default)
+    uses the simulation's step; otherwise the FMU is advanced on this fixed grid
+verbose : bool, optional
+    forward the FMU's internal log messages to stdout (default ``False``)
 """,
     'Comparator': """Comparator block that sets output depending on predefined thresholds for the input.
 
@@ -488,10 +586,7 @@ span : list[float] or tuple[float], optional
     output value range [min, max]
 
 Attributes
-----------
-events : list[ZeroCrossing]
-    internal zero crossing event
-""",
+----------""",
     'Constant': """Produces a constant output signal (SISO).
 
 .. math::
@@ -513,10 +608,7 @@ This block supports vector inputs. This is the operation it does:
     \\vec{y} = \\cos(\\vec{u}) 
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Cosh': """Hyperbolic cosine operator block.
 
 This block supports vector inputs. This is the operation it does:
@@ -526,10 +618,7 @@ This block supports vector inputs. This is the operation it does:
     \\vec{y} = \\cosh(\\vec{u}) 
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Counter': """Counts the number of detected bidirectional threshold crossings.
 
 Uses zero-crossing events for the detection and sets the output 
@@ -543,12 +632,7 @@ threshold : float
     threshold for zero crossing
 
 Attributes
-----------
-E : ZeroCrossing
-    internal event manager
-events : list[ZeroCrossing]
-    internal zero crossing event
-""",
+----------""",
     'CounterDown': """Counts the number of detected unidirectional (hi->lo) threshold crossings.
 
 Note
@@ -564,12 +648,7 @@ threshold : float
     threshold for zero crossing
 
 Attributes
-----------
-E : ZeroCrossingDown
-    internal event manager
-events : list[ZeroCrossing]
-    internal zero crossing event
-""",
+----------""",
     'CounterUp': """Counts the number of detected unidirectional (lo->hi) threshold crossings.
 
 Note
@@ -585,12 +664,7 @@ threshold : float
     threshold for zero crossing
 
 Attributes
-----------
-E : ZeroCrossingUp
-    internal event manager
-events : list[ZeroCrossing]
-    internal zero crossing event
-""",
+----------""",
     'DAC': """Models an ideal Digital-to-Analog Converter (DAC).
 
 This block reads a digital input code periodically from its input ports,
@@ -629,10 +703,7 @@ tau : float, optional
 
 
 Attributes
-----------
-events : list[Schedule]
-    Internal scheduled event responsible for periodic updates.
-""",
+----------""",
     'Deadband': """Deadband (dead zone) element.
 
 Outputs zero when the input is within the dead zone, and passes
@@ -726,12 +797,7 @@ sampling_period : float, None
     sampling period for discrete mode, default is continuous mode
 
 Attributes
-----------
-_buffer : AdaptiveBuffer
-    internal interpolatable adaptive rolling buffer (continuous mode)
-_ring : deque
-    internal ring buffer for N-sample delay (discrete mode)
-""",
+----------""",
     'Differentiator': """Differentiates the input signal. 
 
 Uses a first order transfer function with a pole at the origin which implements 
@@ -769,13 +835,7 @@ f_max : float
     highest expected signal frequency
 
 Attributes
-----------
-op_dyn : DynamicOperator
-    internal dynamic operator for ODE component
-op_alg : DynamicOperator
-    internal algebraic operator
-
-""",
+----------""",
     'DiscreteDerivative': """Discrete-time backward-difference derivative.
 
 .. math::
@@ -794,10 +854,7 @@ tau : float
     delay before first sample
 
 Attributes
-----------
-events : list[Schedule]
-    internal scheduled event for periodic update
-""",
+----------""",
     'DiscreteIntegrator': """Discrete-time integrator (forward Euler).
 
 .. math::
@@ -822,10 +879,7 @@ initial_value : float, array_like
     initial integrator output ``y[0]``
 
 Attributes
-----------
-events : list[Schedule]
-    internal scheduled event for periodic update
-""",
+----------""",
     'DiscreteStateSpace': """Discrete-time MIMO state space block.
 
 .. math::
@@ -854,10 +908,7 @@ initial_value : array_like, None
     initial state ``x[0]``
 
 Attributes
-----------
-events : list[Schedule]
-    internal scheduled event for periodic update
-""",
+----------""",
     'DiscreteTransferFunction': """Discrete-time SISO transfer function in numerator/denominator form.
 
 .. math::
@@ -951,14 +1002,7 @@ zero_div : str, optional
 
 
 Attributes
-----------
-_ops : dict
-    Maps operation characters to exponent values (``+1`` or ``-1``).
-_ops_array : numpy.ndarray
-    Exponents (+1 for ``*``, -1 for ``/``) converted to an array.
-op_alg : Operator
-    Internal algebraic operator.
-""",
+----------""",
     'DynamicalFunction': """Arbitrary MIMO time and input dependent function block.
 
 The function signature needs two arguments `f(u, t)` where `u` is 
@@ -1021,11 +1065,7 @@ func : callable
 
 
 Attributes
-----------
-op_alg : DynamicOperator
-    internal operator that wraps `func`
-
-""",
+----------""",
     'DynamicalSystem': """This block implements a nonlinear dynamical system / nonlinear state space model.
 
 Its basically the same as the `ODE` block with the addition of an output equation
@@ -1047,18 +1087,18 @@ func_alg : callable
     output function of the system
 initial_value : array[float]
     initial state / initial condition
+has_passthrough : bool
+    declare that `func_alg` depends directly on the input `u` (direct
+    feedthrough). Schedules the block in the algebraic loop so `u -> y`
+    propagates within a timestep; leave False when the output depends only
+    on the state `x` and time `t` (default False)
 jac_dyn : callable | None
     optional jacobian of `func_dyn` to improve convergence 
     for implicit ode solvers
 
 
 Attributes
-----------
-op_dyn : DynamicOperator
-    internal dynamic operator for `func_dyn`
-op_alg : DynamicOperator
-    internal dynamic operator for `func_alg`
-""",
+----------""",
     'Equal': """Equality comparison block.
 
 Compares two inputs and outputs 1.0 if |a - b| <= tolerance, else 0.0.
@@ -1077,10 +1117,7 @@ tolerance : float
     comparison tolerance for floating point equality
 
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Exp': """Exponential operator block.
 
 This block supports vector inputs. This is the operation it does:
@@ -1090,10 +1127,7 @@ This block supports vector inputs. This is the operation it does:
     \\vec{y} = e^{\\vec{u}} 
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'FIR': """Discrete-time Finite-Impulse-Response (FIR) filter.
 
 Applies an FIR filter to a periodically sampled input signal.
@@ -1121,10 +1155,7 @@ tau : float
     delay before first sample
 
 Attributes
-----------
-events : list[Schedule]
-    internal scheduled event for periodic filter evaluation
-""",
+----------""",
     'FirstOrderHold': """First-order hold reconstructor.
 
 Reconstructs a continuous signal from periodic samples using linear
@@ -1153,9 +1184,43 @@ tau : float
     delay before first sample
 
 Attributes
+----------""",
+    'FullyImplicitDAE': """Fully-implicit DAE block.
+
+For systems that can't be cast into semi-explicit or mass-matrix form —
+implicit constitutive relations, mixed differential/algebraic with
+non-trivial coupling — the residual form
+
+.. math::
+
+    F(x, \\dot{x}, u, t) = 0, \\quad y = x
+
+is solved directly. Only implicit solvers (ESDIRK/DIRK family) work; the
+block installs a fully-implicit stage builder into the engine via the
+post-processing hook.
+
+The JIT path traces `func` and derives both
+:math:`\\partial F / \\partial x` and :math:`\\partial F / \\partial \\dot{x}`
+via auto-differentiation when no analytical Jacobians are supplied.
+Index-1 systems (singular :math:`\\partial F / \\partial \\dot{x}`):
+prefer DIRK over ESDIRK for stability.
+
+Parameters
 ----------
-events : list[Schedule]
-    internal scheduled event for periodic sampling
+func : callable
+    residual ``F(x, xdot, u, t) -> ndarray``
+initial_value : array_like
+    consistent :math:`x_0`. The caller is responsible for choosing it such
+    that there exists an :math:`\\dot{x}_0` with
+    :math:`F(x_0, \\dot{x}_0, u_0, 0) \\approx 0`.
+jac_x : callable, optional
+    analytical :math:`\\partial F / \\partial x` as a flat row-major
+    ``n × n`` array. Falls back to numerical (central differences) if
+    omitted.
+jac_xdot : callable, optional
+    analytical :math:`\\partial F / \\partial \\dot{x}` as a flat row-major
+    ``n × n`` array. Falls back to numerical (central differences) if
+    omitted.
 """,
     'Function': """Arbitrary MIMO function block, defined by a function or `lambda` expression.
 
@@ -1247,11 +1312,7 @@ func : callable
 
 
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator that wraps `func`
-
-""",
+----------""",
     'GaussianPulseSource': """Source block that generates a gaussian pulse
     
 Parameters
@@ -1276,10 +1337,7 @@ Compares two inputs and outputs 1.0 if a > b, else 0.0.
     \\end{cases}
 
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Integrator': """Integrates the input signal.
 
 Uses a numerical integration engine like this:
@@ -1354,11 +1412,7 @@ Attributes
 points : ndarray
     Flattened array of input point coordinates, stored as 1-D array.
 values : ndarray
-    Stored array of output values at each point, preserving original shape.
-inter : scipy.interpolate.interp1d
-    The scipy 1D interpolator object used for linear interpolation with
-    extrapolation enabled beyond the data range.
-""",
+    Stored array of output values at each point, preserving original shape.""",
     'LeadLag': """Lead-Lag compensator.
 
 The transfer function is defined as
@@ -1407,10 +1461,7 @@ Compares two inputs and outputs 1.0 if a < b, else 0.0.
     \\end{cases}
 
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Log': """Natural logarithm operator block.
 
 This block supports vector inputs. This is the operation it does:
@@ -1420,10 +1471,7 @@ This block supports vector inputs. This is the operation it does:
     \\vec{y} = \\ln(\\vec{u}) 
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Log10': """Base-10 logarithm operator block.
 
 This block supports vector inputs. This is the operation it does:
@@ -1433,10 +1481,7 @@ This block supports vector inputs. This is the operation it does:
     \\vec{y} = \\log_{10}(\\vec{u}) 
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'LogicAnd': """Logical AND block.
 
 Outputs 1.0 if both inputs are nonzero, else 0.0.
@@ -1446,10 +1491,7 @@ Outputs 1.0 if both inputs are nonzero, else 0.0.
     y = a \\land b
 
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'LogicNot': """Logical NOT block.
 
 Outputs 1.0 if input is zero, else 0.0.
@@ -1459,10 +1501,7 @@ Outputs 1.0 if input is zero, else 0.0.
     y = \\lnot x
 
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'LogicOr': """Logical OR block.
 
 Outputs 1.0 if either input is nonzero, else 0.0.
@@ -1472,9 +1511,38 @@ Outputs 1.0 if either input is nonzero, else 0.0.
     y = a \\lor b
 
 Attributes
+----------""",
+    'MassMatrixDAE': """Mass-matrix DAE block.
+
+Solves an implicit ODE with a (possibly singular) constant mass matrix:
+
+.. math::
+
+    \\mathbf{M} \\, \\dot{x} = f(x, u, t), \\quad y = x
+
+`f` has the same signature as in :class:`ODE` — only the way the solver
+integrates it differs. The mass matrix `M` is stored on the block and
+installed into the solver's stage builder when an implicit solver is
+attached. Explicit solvers see a pure ODE and will silently produce wrong
+results for singular `M` — use one of the ESDIRK/DIRK/EUB families for any
+non-trivial mass.
+
+The JIT path traces `func` and derives :math:`\\partial f / \\partial x`
+analytically via auto-differentiation when no analytical Jacobian is
+supplied.
+
+Parameters
 ----------
-op_alg : Operator
-    internal algebraic operator
+func : callable
+    right-hand side ``f(x, u, t) -> ndarray``
+mass : Mass
+    mass matrix descriptor (dense, banded or sparse)
+initial_value : array_like
+    initial state, must have the same length as ``mass.n``
+jac : callable, optional
+    analytical :math:`\\partial f / \\partial x` as a flat row-major
+    ``n × n`` array. If omitted, numerical or AD-derived Jacobians are
+    used downstream.
 """,
     'Matrix': """Linear matrix operation (matrix-vector product).
 
@@ -1490,10 +1558,7 @@ A : np.ndarray
     matrix, 2d array with dim=2
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Mod': """Modulo operator block.
 
 This block supports vector inputs. This is the operation it does:
@@ -1513,10 +1578,7 @@ modulus : float
     modulus value
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Multiplier': """Multiplies all signals from all input ports (MISO).
   
 .. math::
@@ -1532,10 +1594,7 @@ called in the global simulation loop.
 
 
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator that wraps 'prod'
-""",
+----------""",
     'Norm': """Vector norm operator block.
 
 This block computes the Euclidean norm of the input vector:
@@ -1545,10 +1604,7 @@ This block computes the Euclidean norm of the input vector:
     y = \\|\\vec{u}\\|_2 = \\sqrt{\\sum_i u_i^2}
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'ODE': """Ordinary differential equation (ODE) defined by its right hand side function.
 
 .. math::
@@ -1608,10 +1664,7 @@ jac : callable, None
     jacobian of 'func' or 'None'
 
 Attributes
-----------
-op_dyn : DynamicOperator
-    internal dynamic operator for ODE right hand side 'func'
-""",
+----------""",
     'PID': """Proportional-Integral-Differentiation (PID) controller.
 
 The transfer function is defined as
@@ -1779,10 +1832,7 @@ coeffs : array_like
     following the ``numpy.polyval`` convention
 
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Pow': """Raise to power operator block.
 
 This block supports vector inputs. This is the operation it does:
@@ -1797,10 +1847,7 @@ exponent : float, array_like
     exponent to raise the input to the power of
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'PowProd': """Power-Product operator block.
 
 This block raises each input to a power and then multiplies all results together:
@@ -1816,10 +1863,7 @@ exponents : float, array_like
     applies same exponent to all inputs.
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Pulse': """Alias for PulseSource.
 
 .. deprecated:: 1.0.0
@@ -1848,33 +1892,24 @@ duty : float, optional
     The high plateau duration is `T * duty`.
 
 Attributes
-----------
-events : list[Schedule]
-    Internal scheduled events triggering phase transitions.
-_phase : str
-    Current phase of the pulse ('low', 'rising', 'high', 'falling').
-_phase_start_time : float
-    Simulation time when the current phase began.
-""",
-    'RandomNumberGenerator': """Generates a random output value using `numpy.random.rand`.
+----------""",
+    'RandomNumberGenerator': """Generates a random output value from fastsim's deterministic,
+counter-based RNG (see ``fastsim.random``) — not ``numpy.random`` — so runs
+are bit-for-bit reproducible when a `seed` is given.
 
-If no `sampling_period` (None) is specified, every simulation timestep gets
-a random value. Otherwise an internal `Schedule` event is used to periodically
-sample a random value and set the output like a zero-order-hold stage.
+If no `sampling_period` (None) is specified, a fresh value is drawn every
+simulation timestep; the block is then opaque to the static compiler. With a
+`sampling_period`, the output holds each sample between draws like a
+zero-order-hold stage; this mode lowers to a pure op-graph, so it is fully
+supported by `compile()` and C code generation.
 
 Parameters
 ----------
 sampling_period : float, None
-    time between random samples
-
-Attributes
-----------
-_sample : float
-    internal random number state in case that
-    no `sampling_period` is provided
-Evt : Schedule
-    internal event that periodically samples a random
-    value in case `sampling_period` is provided
+    time between random samples; None (default) draws every timestep
+seed : int, None
+    seed of the deterministic sample stream. None draws one entropy sample
+    at construction (independent instances, fixed thereafter)
 """,
     'RateLimiter': """Rate limiter block that limits the rate of change of a signal.
 
@@ -1948,10 +1983,7 @@ value_down : float
     value for lower relay state (default: 0.0)
 
 Attributes
-----------
-events : list[ZeroCrossingUp, ZeroCrossingDown]
-    internal zero crossing events for relay state transitions
-""",
+----------""",
     'Rescale': """Linear rescaling / mapping block.
 
 Maps the input linearly from range ``[i0, i1]`` to range ``[o0, o1]``.
@@ -1977,10 +2009,7 @@ saturate : bool
     if True, clamp output to [min(o0,o1), max(o0,o1)]
 
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'SampleHold': """Zero-order hold: samples the input periodically and holds it at the output.
 
 .. math::
@@ -1999,10 +2028,7 @@ tau : float
     delay before first sample
 
 Attributes
-----------
-events : list[Schedule]
-    internal scheduled event for periodic sampling
-""",
+----------""",
     'Scope': """Block for recording time domain data with variable sampling period.
 
 A time threshold can be set by `t_wait` to start recording data after the simulation
@@ -2022,20 +2048,50 @@ labels : list[str]
     labels for the scope traces, and for the csv, optional
 
 Attributes
+----------""",
+    'SemiExplicitDAE': """Semi-explicit Index-1 DAE block.
+
+Solves an Index-1 system with split differential and algebraic states
+
+.. math::
+
+    \\dot{x} &= f_\\mathrm{dyn}(x, z, u, t) \\\\
+    0       &= f_\\mathrm{alg}(x, z, u, t)
+
+The algebraic state :math:`z` is eliminated by an inner Newton on
+:math:`f_\\mathrm{alg}(x, z, u, t) = 0` at every RHS evaluation
+(warmstarted from the previous call). The outer solver sees a plain ODE
+in :math:`x`, so any of the explicit or implicit solvers in fastsim can
+be attached.
+
+The block output is :math:`[x; z]` (with `z` taken from the converged
+inner Newton), so downstream blocks see both differential and algebraic
+states.
+
+Trade-offs vs formulating the same system as a :class:`MassMatrixDAE`
+with a block-diagonal singular mass:
+
+- explicit solvers (RKDP54, RKF78, RKV65, …) work
+- smaller Newton problem per stage (size :math:`n_z` instead of
+  :math:`n_x + n_z`)
+- inner Newton cost per RHS call (typically 1–3 iterations once
+  warmstarted)
+- adaptive error control watches only :math:`x`, not :math:`z`
+
+Parameters
 ----------
-recording_time : list[float]
-    recorded time points
-recording_data : list[float]
-    recorded data points
-_incremental_idx : int
-    index for incremental reading of accumulated data since last
-    call of incremental read
-_sample_next_timestep : bool
-    flag to indicate this is a timestep to sample, only used for
-    event based sampling when `sampling_period` is provided as an arg
-events : list[Schedule]
-    internal scheduled event for periodic input sampling when
-    `sampling_period` is provided
+f_dyn : callable
+    differential RHS ``f_dyn(x, z, u, t) -> ndarray`` of length ``n_x``
+f_alg : callable
+    algebraic constraint ``f_alg(x, z, u, t) -> ndarray`` of length ``n_z``
+x0 : array_like
+    initial differential state (length ``n_x``)
+z0 : array_like
+    initial algebraic state (length ``n_z``), used as Newton warmstart
+jac_z : callable, optional
+    analytical :math:`\\partial f_\\mathrm{alg} / \\partial z` as a flat
+    row-major ``n_z × n_z`` array. Falls back to central differences if
+    omitted.
 """,
     'Sin': """Sine operator block.
 
@@ -2047,10 +2103,7 @@ This block supports vector inputs. This is the operation it does:
 
 
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Sinh': """Hyperbolic sine operator block.
 
 This block supports vector inputs. This is the operation it does:
@@ -2060,10 +2113,7 @@ This block supports vector inputs. This is the operation it does:
     \\vec{y} = \\sinh(\\vec{u}) 
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'SinusoidalPhaseNoiseSource': """Sinusoidal source with cumulative and white phase noise.
 
 Generates a sinusoid with additive phase noise from two components:
@@ -2097,18 +2147,12 @@ sig_white : float
 sampling_period : float, None
     time between phase noise samples. If None,
     noise is sampled every timestep (default is 0.1)
+seed : int, None
+    seed of the deterministic noise streams. None draws one entropy sample
+    at construction (independent instances, fixed thereafter)
 
 Attributes
-----------
-omega : float
-    angular frequency of the sinusoid, derived from `frequency`
-noise_1 : float
-    internal noise value for white phase noise
-noise_2 : float
-    internal noise value for cumulative phase noise
-events : list[Schedule]
-    scheduled event for periodic sampling (only if sampling_period is set)
-""",
+----------""",
     'SinusoidalSource': """Source block that generates a sinusoid wave
     
 Parameters
@@ -2270,10 +2314,7 @@ This block supports vector inputs. This is the operation it does:
     \\vec{y} = \\sqrt{|\\vec{u}|} 
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'SquareWaveSource': """Discrete time square wave source.
 
 Utilizes scheduled events to periodically set 
@@ -2289,10 +2330,7 @@ phase : float
     phase of the square wave signal
 
 Attributes
-----------
-events : list[Schedule]
-    internal scheduled events 
-""",
+----------""",
     'StateSpace': """Linear time invariant (LTI) multi input multi output (MIMO) state space model.
 
 .. math::
@@ -2337,20 +2375,9 @@ A, B, C, D : array_like
     real valued state space matrices
 initial_value : array_like, None
     initial state / initial condition
-state_labels, input_labels, output_labels : list[str], None
-    optional identifiers for the states, inputs and outputs of the model.
-    Models assembled by 'Simulation.to_statespace' carry the block names
-    they were built from here. These are also exactly the 'states',
-    'inputs' and 'outputs' keyword arguments of 'control.StateSpace', so
-    the model hands over to python-control without an adapter.
 
 Attributes
-----------
-op_dyn : DynamicOperator
-    internal dynamic operator for state equation
-op_alg : DynamicOperator
-    internal algebraic operator for mapping to outputs
-""",
+----------""",
     'Step': """Alias for StepSource.
 
 .. deprecated:: 1.0.0
@@ -2412,12 +2439,7 @@ tau : float | list[float]
     delay of the step, or delays of the different steps
 
 Attributes
-----------
-Evt : ScheduleList
-    internal scheduled event directly accessible
-events : list[ScheduleList]
-    list of interna events
-""",
+----------""",
     'Switch': """Switch block that selects between its inputs.
 
 Example
@@ -2464,10 +2486,7 @@ This block supports vector inputs. This is the operation it does:
     \\vec{y} = \\tan(\\vec{u}) 
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'Tanh': """Hyperbolic tangent operator block.
 
 This block supports vector inputs. This is the operation it does:
@@ -2477,10 +2496,7 @@ This block supports vector inputs. This is the operation it does:
     \\vec{y} = \\tanh(\\vec{u}) 
     
 Attributes
-----------
-op_alg : Operator
-    internal algebraic operator
-""",
+----------""",
     'TappedDelay': """Tapped delay line.
 
 Outputs the current and ``N-1`` past samples of the input as parallel
@@ -2500,10 +2516,7 @@ tau : float
     delay before first sample
 
 Attributes
-----------
-events : list[Schedule]
-    internal scheduled event for periodic shift
-""",
+----------""",
     'TransferFunction': """Alias for TransferFunctionPRC.
 
 .. deprecated:: 1.0.0
@@ -2707,10 +2720,7 @@ tau : float
     delay time for the start time of the event
     
 Attributes
-----------
-Evt : Schedule
-    internal event. Used for periodic sampling the wrapped method
-""",
+----------""",
     'ZeroOrderHold': """Zero-order hold: samples the input periodically and holds it at the output.
 
 .. math::
@@ -2729,8 +2739,5 @@ tau : float
     delay before first sample
 
 Attributes
-----------
-events : list[Schedule]
-    internal scheduled event for periodic sampling
-""",
+----------""",
 }

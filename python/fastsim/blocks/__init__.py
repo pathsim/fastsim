@@ -16,25 +16,18 @@ from functools import lru_cache
 from fastsim._fastsim import Block
 from fastsim import _fastsim
 
-from ._docstrings_pathsim import DOCS as _DOCS_PATHSIM
-from ._docstrings_fastsim import DOCS_FASTSIM as _DOCS_FASTSIM
+from ._docstrings import DOCS as _DOCS
 from ._shim import _build_info, _port_getitem
-
-# fastsim-specific docstrings override pathsim mirrors when names collide.
-_DOCS = {**_DOCS_PATHSIM, **_DOCS_FASTSIM}
 
 # All factory-backed and JIT block classes (explicit shims).
 from . import _generated as _generated_mod
 from ._generated import *  # noqa: F401,F403
 
-# Apply the fastsim-specific docstring overrides to the GENERATED classes too.
-# Previously only the four hand-written classes got them (via
-# `_finalize_block_class`), so a generated block with a fastsim override — e.g.
-# CoSimulationFMU, whose extracted stub is empty — kept the empty inline
-# docstring and `info()`/`help()` disagreed with the registry. Applying the
-# override here makes `_DOCS_FASTSIM` the single authoritative store for every
-# block, generated or hand-written.
-for _name, _doc in _DOCS_FASTSIM.items():
+# Apply the registry docstrings to the GENERATED classes at import time, so
+# `_docstrings.py` stays the single runtime authority even when it was edited
+# without re-running scripts/gen_blocks.py (the inline docstrings in
+# `_generated.py` are then just a stale cache for static tooling).
+for _name, _doc in _DOCS.items():
     _cls = getattr(_generated_mod, _name, None)
     if isinstance(_cls, type) and issubclass(_cls, Block) and _doc:
         _cls.__doc__ = _doc

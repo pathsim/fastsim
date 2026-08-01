@@ -46,6 +46,11 @@ with the notice. So:
 A commercial license lifts the noncommercial limitation on the generated Output
 so you can compile it into, and distribute it as part of, a commercial product.
 
+**Distribution of Output is royalty-free.** License fees are for generating
+and using fastsim — never per shipped unit, device, or end user, and with no
+runtime fees. Output shipped in your products during the license term stays
+licensed after the term ends.
+
 ---
 
 ## What noncommercial use always allows (no license needed)

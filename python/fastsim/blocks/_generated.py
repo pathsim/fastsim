@@ -54,8 +54,6 @@ class ADC(_ShimBlock):
 
     Attributes
     ----------
-    events : list[Schedule]
-        Internal scheduled event responsible for periodic sampling and conversion.
     """
     _factory_name = "ADC"
     _param_defaults = {'n_bits': 4, 'span': None, 'T': 1.0, 'tau': 0.0}
@@ -78,8 +76,6 @@ class Abs(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Abs"
     _param_defaults = {}
@@ -140,12 +136,6 @@ class Adder(_ShimBlock):
 
     Attributes
     ----------
-    _ops : dict
-        dict that maps string operations to numerical
-    _ops_array : array_like
-        operations converted to array
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Adder"
     _param_defaults = {'operations': None}
@@ -171,8 +161,6 @@ class Alias(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Alias"
     _param_defaults = {}
@@ -246,8 +234,6 @@ class Amplifier(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Amplifier"
     _param_defaults = {'gain': None}
@@ -347,8 +333,6 @@ class Atan(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Atan"
     _param_defaults = {}
@@ -377,8 +361,6 @@ class Atan2(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Atan2"
     _param_defaults = {}
@@ -579,15 +561,12 @@ class ChirpPhaseNoiseSource(_ShimBlock):
     sampling_period : float, None
         time between phase noise samples. If None,
         noise is sampled every timestep (default is 0.1)
+    seed : int, None
+        seed of the deterministic noise streams. None draws one entropy sample
+        at construction (independent instances, fixed thereafter)
 
     Attributes
     ----------
-    noise_1 : float
-        internal noise value for white phase noise
-    noise_2 : float
-        internal noise value for cumulative phase noise
-    events : list[Schedule]
-        scheduled event for periodic sampling (only if sampling_period is set)
     """
     _factory_name = "ChirpPhaseNoiseSource"
     _param_defaults = {'amplitude': 1.0, 'f0': 1.0, 'BW': 1.0, 'T': 1.0, 'phase': 0.0, 'sig_cum': 0.0, 'sig_white': 0.0, 'sampling_period': 0.1, 'seed': None}
@@ -633,8 +612,6 @@ class Clip(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Clip"
     _param_defaults = {'min_val': None, 'max_val': None}
@@ -677,8 +654,6 @@ class ClockSource(_ShimBlock):
 
     Attributes
     ----------
-    events : list[Schedule]
-        internal scheduled event list
     """
     _factory_name = "ClockSource"
     _param_defaults = {'T': 1.0, 'tau': 0.0}
@@ -754,8 +729,6 @@ class Comparator(_ShimBlock):
 
     Attributes
     ----------
-    events : list[ZeroCrossing]
-        internal zero crossing event
     """
     _factory_name = "Comparator"
     _param_defaults = {'threshold': 0.0, 'tolerance': None, 'span': None}
@@ -801,8 +774,6 @@ class Cos(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Cos"
     _param_defaults = {}
@@ -825,8 +796,6 @@ class Cosh(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Cosh"
     _param_defaults = {}
@@ -853,10 +822,6 @@ class Counter(_ShimBlock):
 
     Attributes
     ----------
-    E : ZeroCrossing
-        internal event manager
-    events : list[ZeroCrossing]
-        internal zero crossing event
     """
     _factory_name = "Counter"
     _param_defaults = {'start': None, 'threshold': None}
@@ -885,10 +850,6 @@ class CounterDown(_ShimBlock):
 
     Attributes
     ----------
-    E : ZeroCrossingDown
-        internal event manager
-    events : list[ZeroCrossing]
-        internal zero crossing event
     """
     _factory_name = "CounterDown"
     _param_defaults = {'start': None, 'threshold': None}
@@ -917,10 +878,6 @@ class CounterUp(_ShimBlock):
 
     Attributes
     ----------
-    E : ZeroCrossingUp
-        internal event manager
-    events : list[ZeroCrossing]
-        internal zero crossing event
     """
     _factory_name = "CounterUp"
     _param_defaults = {'start': None, 'threshold': None}
@@ -972,8 +929,6 @@ class DAC(_ShimBlock):
 
     Attributes
     ----------
-    events : list[Schedule]
-        Internal scheduled event responsible for periodic updates.
     """
     _factory_name = "DAC"
     _param_defaults = {'n_bits': 4, 'span': None, 'T': 1.0, 'tau': 0.0}
@@ -1091,10 +1046,6 @@ class Delay(_ShimBlock):
 
     Attributes
     ----------
-    _buffer : AdaptiveBuffer
-        internal interpolatable adaptive rolling buffer (continuous mode)
-    _ring : deque
-        internal ring buffer for N-sample delay (discrete mode)
     """
     _factory_name = "Delay"
     _param_defaults = {'tau': 0.001, 'sampling_period': None}
@@ -1145,10 +1096,6 @@ class Differentiator(_ShimBlock):
 
     Attributes
     ----------
-    op_dyn : DynamicOperator
-        internal dynamic operator for ODE component
-    op_alg : DynamicOperator
-        internal algebraic operator
     """
     _factory_name = "Differentiator"
     _param_defaults = {'f_max': None}
@@ -1180,8 +1127,6 @@ class DiscreteDerivative(_ShimBlock):
 
     Attributes
     ----------
-    events : list[Schedule]
-        internal scheduled event for periodic update
     """
     _factory_name = "DiscreteDerivative"
     _param_defaults = {'T': None, 'tau': None}
@@ -1219,8 +1164,6 @@ class DiscreteIntegrator(_ShimBlock):
 
     Attributes
     ----------
-    events : list[Schedule]
-        internal scheduled event for periodic update
     """
     _factory_name = "DiscreteIntegrator"
     _param_defaults = {'T': 1.0, 'tau': 0.0, 'initial_value': None}
@@ -1262,8 +1205,6 @@ class DiscreteStateSpace(_ShimBlock):
 
     Attributes
     ----------
-    events : list[Schedule]
-        internal scheduled event for periodic update
     """
     _factory_name = "DiscreteStateSpace"
     _param_defaults = {'A': None, 'B': None, 'C': None, 'D': None, 'T': 1.0, 'tau': 0.0, 'initial_value': None}
@@ -1381,12 +1322,6 @@ class Divider(_ShimBlock):
 
     Attributes
     ----------
-    _ops : dict
-        Maps operation characters to exponent values (``+1`` or ``-1``).
-    _ops_array : numpy.ndarray
-        Exponents (+1 for ``*``, -1 for ``/``) converted to an array.
-    op_alg : Operator
-        Internal algebraic operator.
     """
     _factory_name = "Divider"
     _param_defaults = {'operations': '*/', 'zero_div': 'warn'}
@@ -1462,8 +1397,6 @@ class DynamicalFunction(_JitShimBlock):
 
     Attributes
     ----------
-    op_alg : DynamicOperator
-        internal operator that wraps `func`
     """
     _factory_name = "DynamicalFunction"
     _param_defaults = {'func': None}
@@ -1499,6 +1432,11 @@ class DynamicalSystem(_JitShimBlock):
         output function of the system
     initial_value : array[float]
         initial state / initial condition
+    has_passthrough : bool
+        declare that `func_alg` depends directly on the input `u` (direct
+        feedthrough). Schedules the block in the algebraic loop so `u -> y`
+        propagates within a timestep; leave False when the output depends only
+        on the state `x` and time `t` (default False)
     jac_dyn : callable | None
         optional jacobian of `func_dyn` to improve convergence
         for implicit ode solvers
@@ -1506,10 +1444,6 @@ class DynamicalSystem(_JitShimBlock):
 
     Attributes
     ----------
-    op_dyn : DynamicOperator
-        internal dynamic operator for `func_dyn`
-    op_alg : DynamicOperator
-        internal dynamic operator for `func_alg`
     """
     _factory_name = "DynamicalSystem"
     _param_defaults = {'func_dyn': None, 'func_alg': None, 'initial_value': None, 'has_passthrough': False, 'jac_dyn': None}
@@ -1543,8 +1477,6 @@ class Equal(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Equal"
     _param_defaults = {'tolerance': None}
@@ -1567,8 +1499,6 @@ class Exp(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Exp"
     _param_defaults = {}
@@ -1609,8 +1539,6 @@ class FIR(_ShimBlock):
 
     Attributes
     ----------
-    events : list[Schedule]
-        internal scheduled event for periodic filter evaluation
     """
     _factory_name = "FIR"
     _param_defaults = {'coeffs': None, 'T': 1.0, 'tau': 0.0}
@@ -1652,8 +1580,6 @@ class FirstOrderHold(_ShimBlock):
 
     Attributes
     ----------
-    events : list[Schedule]
-        internal scheduled event for periodic sampling
     """
     _factory_name = "FirstOrderHold"
     _param_defaults = {'T': None, 'tau': None}
@@ -1807,8 +1733,6 @@ class Function(_JitShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator that wraps `func`
     """
     _factory_name = "Function"
     _param_defaults = {'func': None}
@@ -1859,8 +1783,6 @@ class GreaterThan(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "GreaterThan"
     _param_defaults = {}
@@ -1959,9 +1881,6 @@ class LUT1D(_ShimBlock):
         Flattened array of input point coordinates, stored as 1-D array.
     values : ndarray
         Stored array of output values at each point, preserving original shape.
-    inter : scipy.interpolate.interp1d
-        The scipy 1D interpolator object used for linear interpolation with
-        extrapolation enabled beyond the data range.
     """
     _factory_name = "LUT1D"
     _param_defaults = {'points': None, 'values': None, 'fill_value': 'extrapolate'}
@@ -2034,8 +1953,6 @@ class LessThan(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "LessThan"
     _param_defaults = {}
@@ -2058,8 +1975,6 @@ class Log(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Log"
     _param_defaults = {}
@@ -2082,8 +1997,6 @@ class Log10(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Log10"
     _param_defaults = {}
@@ -2106,8 +2019,6 @@ class LogicAnd(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "LogicAnd"
     _param_defaults = {}
@@ -2130,8 +2041,6 @@ class LogicNot(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "LogicNot"
     _param_defaults = {}
@@ -2154,8 +2063,6 @@ class LogicOr(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "LogicOr"
     _param_defaults = {}
@@ -2228,8 +2135,6 @@ class Matrix(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Matrix"
     _param_defaults = {'A': None}
@@ -2262,8 +2167,6 @@ class Mod(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Mod"
     _param_defaults = {'modulus': None}
@@ -2305,8 +2208,6 @@ class Multiplier(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator that wraps 'prod'
     """
     _factory_name = "Multiplier"
     _param_defaults = {}
@@ -2329,8 +2230,6 @@ class Norm(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Norm"
     _param_defaults = {}
@@ -2403,8 +2302,6 @@ class ODE(_JitShimBlock):
 
     Attributes
     ----------
-    op_dyn : DynamicOperator
-        internal dynamic operator for ODE right hand side 'func'
     """
     _factory_name = "ODE"
     _param_defaults = {'func': None, 'initial_value': None, 'jac': None}
@@ -2631,8 +2528,6 @@ class Polynomial(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Polynomial"
     _param_defaults = {'coeffs': None}
@@ -2660,8 +2555,6 @@ class Pow(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Pow"
     _param_defaults = {'exponent': None}
@@ -2690,8 +2583,6 @@ class PowProd(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "PowProd"
     _param_defaults = {'exponents': None}
@@ -2745,12 +2636,6 @@ class PulseSource(_ShimBlock):
 
     Attributes
     ----------
-    events : list[Schedule]
-        Internal scheduled events triggering phase transitions.
-    _phase : str
-        Current phase of the pulse ('low', 'rising', 'high', 'falling').
-    _phase_start_time : float
-        Simulation time when the current phase began.
     """
     _factory_name = "PulseSource"
     _param_defaults = {'amplitude': 1.0, 'T': 1.0, 't_rise': 0.0, 't_fall': 0.0, 'tau': 0.0, 'duty': 0.5}
@@ -2763,25 +2648,23 @@ class PulseSource(_ShimBlock):
 
 class RandomNumberGenerator(_ShimBlock):
     """
-    Generates a random output value using `numpy.random.rand`.
+    Generates a random output value from fastsim's deterministic,
+    counter-based RNG (see ``fastsim.random``) — not ``numpy.random`` — so runs
+    are bit-for-bit reproducible when a `seed` is given.
 
-    If no `sampling_period` (None) is specified, every simulation timestep gets
-    a random value. Otherwise an internal `Schedule` event is used to periodically
-    sample a random value and set the output like a zero-order-hold stage.
+    If no `sampling_period` (None) is specified, a fresh value is drawn every
+    simulation timestep; the block is then opaque to the static compiler. With a
+    `sampling_period`, the output holds each sample between draws like a
+    zero-order-hold stage; this mode lowers to a pure op-graph, so it is fully
+    supported by `compile()` and C code generation.
 
     Parameters
     ----------
     sampling_period : float, None
-        time between random samples
-
-    Attributes
-    ----------
-    _sample : float
-        internal random number state in case that
-        no `sampling_period` is provided
-    Evt : Schedule
-        internal event that periodically samples a random
-        value in case `sampling_period` is provided
+        time between random samples; None (default) draws every timestep
+    seed : int, None
+        seed of the deterministic sample stream. None draws one entropy sample
+        at construction (independent instances, fixed thereafter)
     """
     _factory_name = "RandomNumberGenerator"
     _param_defaults = {'sampling_period': None, 'seed': None}
@@ -2878,8 +2761,6 @@ class Relay(_ShimBlock):
 
     Attributes
     ----------
-    events : list[ZeroCrossingUp, ZeroCrossingDown]
-        internal zero crossing events for relay state transitions
     """
     _factory_name = "Relay"
     _param_defaults = {'threshold_up': None, 'threshold_down': None, 'value_up': None, 'value_down': None}
@@ -2918,8 +2799,6 @@ class Rescale(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Rescale"
     _param_defaults = {'i0': 0.0, 'i1': 1.0, 'o0': 0.0, 'o1': 1.0, 'saturate': False}
@@ -2951,8 +2830,6 @@ class SampleHold(_ShimBlock):
 
     Attributes
     ----------
-    events : list[Schedule]
-        internal scheduled event for periodic sampling
     """
     _factory_name = "SampleHold"
     _param_defaults = {'T': None, 'tau': None}
@@ -3033,8 +2910,6 @@ class Sin(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Sin"
     _param_defaults = {}
@@ -3057,8 +2932,6 @@ class Sinh(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Sinh"
     _param_defaults = {}
@@ -3104,17 +2977,12 @@ class SinusoidalPhaseNoiseSource(_ShimBlock):
     sampling_period : float, None
         time between phase noise samples. If None,
         noise is sampled every timestep (default is 0.1)
+    seed : int, None
+        seed of the deterministic noise streams. None draws one entropy sample
+        at construction (independent instances, fixed thereafter)
 
     Attributes
     ----------
-    omega : float
-        angular frequency of the sinusoid, derived from `frequency`
-    noise_1 : float
-        internal noise value for white phase noise
-    noise_2 : float
-        internal noise value for cumulative phase noise
-    events : list[Schedule]
-        scheduled event for periodic sampling (only if sampling_period is set)
     """
     _factory_name = "SinusoidalPhaseNoiseSource"
     _param_defaults = {'frequency': 1.0, 'amplitude': 1.0, 'phase': 0.0, 'sig_cum': 0.0, 'sig_white': 0.0, 'sampling_period': 0.1, 'seed': None}
@@ -3237,8 +3105,6 @@ class Sqrt(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Sqrt"
     _param_defaults = {}
@@ -3267,8 +3133,6 @@ class SquareWaveSource(_ShimBlock):
 
     Attributes
     ----------
-    events : list[Schedule]
-        internal scheduled events
     """
     _factory_name = "SquareWaveSource"
     _param_defaults = {'amplitude': None, 'frequency': None, 'phase': None}
@@ -3325,19 +3189,9 @@ class StateSpace(_ShimBlock):
         real valued state space matrices
     initial_value : array_like, None
         initial state / initial condition
-    state_labels, input_labels, output_labels : list[str], None
-        optional identifiers for the states, inputs and outputs of the model.
-        Models assembled by 'Simulation.to_statespace' carry the block names
-        they were built from here. These are also exactly the 'states',
-        'inputs' and 'outputs' keyword arguments of 'control.StateSpace', so
-        the model hands over to python-control without an adapter.
 
     Attributes
     ----------
-    op_dyn : DynamicOperator
-        internal dynamic operator for state equation
-    op_alg : DynamicOperator
-        internal algebraic operator for mapping to outputs
     """
     _factory_name = "StateSpace"
     _param_defaults = {'A': None, 'B': None, 'C': None, 'D': None, 'initial_value': None}
@@ -3424,10 +3278,6 @@ class StepSource(_ShimBlock):
 
     Attributes
     ----------
-    Evt : ScheduleList
-        internal scheduled event directly accessible
-    events : list[ScheduleList]
-        list of interna events
     """
     _factory_name = "StepSource"
     _param_defaults = {'amplitude': None, 'tau': None}
@@ -3497,8 +3347,6 @@ class Tan(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Tan"
     _param_defaults = {}
@@ -3521,8 +3369,6 @@ class Tanh(_ShimBlock):
 
     Attributes
     ----------
-    op_alg : Operator
-        internal algebraic operator
     """
     _factory_name = "Tanh"
     _param_defaults = {}
@@ -3555,8 +3401,6 @@ class TappedDelay(_ShimBlock):
 
     Attributes
     ----------
-    events : list[Schedule]
-        internal scheduled event for periodic shift
     """
     _factory_name = "TappedDelay"
     _param_defaults = {'N': 2, 'T': 1.0, 'tau': 0.0}
@@ -3840,8 +3684,6 @@ class Wrapper(_JitShimBlock):
 
     Attributes
     ----------
-    Evt : Schedule
-        internal event. Used for periodic sampling the wrapped method
     """
     _factory_name = "Wrapper"
     _param_defaults = {'func': None, 'T': 1.0, 'tau': 0.0}
@@ -3875,8 +3717,6 @@ class ZeroOrderHold(_ShimBlock):
 
     Attributes
     ----------
-    events : list[Schedule]
-        internal scheduled event for periodic sampling
     """
     _factory_name = "ZeroOrderHold"
     _param_defaults = {'T': None, 'tau': None}
