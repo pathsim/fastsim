@@ -306,7 +306,11 @@ impl PySimulation {
             factories::factory_from_name(&name, tol_abs, tol_rel)
                 .ok_or_else(|| PyValueError::new_err(factories::unknown_solver_message(&name)))?
         } else {
-            factories::ssprk22_factory()
+            // Default solver, but still with THIS simulation's tolerances:
+            // `ssprk22_factory()` hardcodes the crate defaults, so passing
+            // `tolerance_lte_abs=` without `Solver=` used to be silently ignored.
+            factories::factory_from_name("SSPRK22", tol_abs, tol_rel)
+                .expect("SSPRK22 is in the tableau registry")
         };
 
         let mut sim = crate::simulation::Simulation::with_solver_and_logger(
@@ -458,6 +462,13 @@ impl PySimulation {
     /// `"ssprk22"`/`"ssprk33"`/`"ssprk34"` are fixed-step. Implicit (DIRK/ESDIRK)
     /// tableaus are not yet emitted.
     ///
+    /// `atol`/`rtol` are the local-truncation-error tolerances inlined into an
+    /// ADAPTIVE solver's step controller (`scale = atol + rtol*|x|`). They
+    /// default to THIS simulation's `tolerance_lte_abs`/`tolerance_lte_rel`, so
+    /// the generated C and a reference run of the same model accept the same
+    /// steps; pass them explicitly to target a different budget on the embedded
+    /// side. Fixed-step tableaus have no error control and ignore both.
+    ///
     /// Raises `ValueError` for an unknown option value and `RuntimeError` for a
     /// construct the backend cannot lower (e.g. an opaque `extern` block).
     #[cfg(feature = "codegen")]
@@ -472,6 +483,8 @@ impl PySimulation {
         scaffold = false,
         trace = false,
         a2l = false,
+        atol = None,
+        rtol = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn to_c<'py>(
@@ -487,14 +500,25 @@ impl PySimulation {
         scaffold: bool,
         trace: bool,
         a2l: bool,
+        atol: Option<f64>,
+        rtol: Option<f64>,
     ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-        use super::codegen::{generate_to_dict, options_from_strs};
+        use super::codegen::{generate_to_dict, options_from_strs, resolve_tolerances};
+        use crate::codegen::Tolerances;
         let sim = self.inner.borrow();
         #[allow(clippy::needless_borrow)]
         let module = crate::ir::builder::module_from_sim(&sim, name);
         let log = sim.logger.clone();
-        let opts =
+        let mut opts =
             options_from_strs(numeric, reductions, structure, layout, solver, api, scaffold, trace, a2l)?;
+        // Inherit this simulation's LTE tolerances by default, for the same
+        // reason `compile()` inherits its solver: without it the generated C
+        // silently runs a different error budget than the model it came from.
+        opts.tolerances = resolve_tolerances(
+            atol,
+            rtol,
+            Tolerances { abs: sim.engine.tolerance_lte_abs, rel: sim.engine.tolerance_lte_rel },
+        )?;
         generate_to_dict(py, &module, &opts, &log)
     }
 
@@ -1049,8 +1073,16 @@ impl PySimulation {
     #[pyo3(signature = (solver, tolerance_lte_abs=None, tolerance_lte_rel=None))]
     fn set_solver(&self, solver: &Bound<'_, PyAny>, tolerance_lte_abs: Option<f64>, tolerance_lte_rel: Option<f64>) -> PyResult<()> {
         use crate::solvers::factories;
-        let tol_abs = tolerance_lte_abs.unwrap_or(crate::constants::SOL_TOLERANCE_LTE_ABS);
-        let tol_rel = tolerance_lte_rel.unwrap_or(crate::constants::SOL_TOLERANCE_LTE_REL);
+        // Keep THIS simulation's tolerances when none are given (same rule as
+        // `pss`). Falling back to the crate defaults instead silently retuned a
+        // model built with a tighter budget to the default one, just by swapping
+        // its solver.
+        let (cur_abs, cur_rel) = {
+            let sim = self.inner.borrow();
+            (sim.engine.tolerance_lte_abs, sim.engine.tolerance_lte_rel)
+        };
+        let tol_abs = tolerance_lte_abs.unwrap_or(cur_abs);
+        let tol_rel = tolerance_lte_rel.unwrap_or(cur_rel);
 
         let name: String = solver.getattr("__name__")
             .map_err(|_| PyValueError::new_err("solver must be a solver class (e.g. RKDP54, ESDIRK43)"))?

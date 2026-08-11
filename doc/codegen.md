@@ -182,8 +182,26 @@ unique `name`.
 | `scaffold`   | `False` (default), `True`: additionally emit `CMakeLists.txt` + `<name>_main.c` (see below) |
 | `trace`      | `False` (default), `True`: additionally emit `<name>_trace.json` (see below) |
 | `a2l`        | `False` (default), `True`: additionally emit `<name>.a2l` (see below) |
+| `atol`/`rtol` | LTE tolerances for an ADAPTIVE solver's step controller. Default to the simulation's own `tolerance_lte_abs`/`tolerance_lte_rel` |
 
 Implicit (DIRK/ESDIRK) tableaus are not yet emitted. See `help(Simulation.to_c)`.
+
+### Adaptive tolerances
+
+An adaptive tableau emits an accept/reject loop whose error scale is
+`atol + rtol*|x|`, with both values inlined as literals. `Simulation.to_c`
+inherits them from the simulation, so the generated C accepts the same steps as
+a reference run of the same model — a model tuned to a tighter budget does not
+silently generate C running the engine defaults. Pass `atol=`/`rtol=` explicitly
+to target a different budget on the embedded side. Fixed-step tableaus have no
+error control and ignore both.
+
+```python
+sim = Simulation(blocks, connections, Solver=RKBS32,
+                 tolerance_lte_abs=1e-9, tolerance_lte_rel=1e-7)
+sim.to_c("m", solver="rkbs32")                    # inherits 1e-9 / 1e-7
+sim.to_c("m", solver="rkbs32", atol=1e-6)         # looser abs budget in C
+```
 
 ---
 

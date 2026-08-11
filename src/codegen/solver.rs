@@ -24,7 +24,7 @@
 use crate::constants;
 use crate::solvers::tableaus::{Tableau, TableauKind};
 
-use super::{fmt_lit, Numeric, R};
+use super::{fmt_lit, Numeric, Tolerances, R};
 
 /// Forward Euler as a one-stage explicit Butcher tableau, so it flows through the
 /// same generic emitter as every other explicit method. Not in the runtime
@@ -51,6 +51,9 @@ pub(crate) struct SolverCtx<'a> {
     pub numeric: Numeric,
     pub has_events: bool,
     pub has_sig: bool,
+    /// LTE tolerances inlined into the adaptive step controller. Unused by the
+    /// fixed-step emitter.
+    pub tolerances: Tolerances,
 }
 
 impl SolverCtx<'_> {
@@ -268,9 +271,11 @@ fn emit_adaptive(t: &Tableau, cx: &SolverCtx) -> String {
     let s = t.s;
     let name = cx.name;
 
-    // Controller constants (mirror crate::constants + Solver defaults).
-    let atol = cx.lit(constants::SOL_TOLERANCE_LTE_ABS);
-    let rtol = cx.lit(constants::SOL_TOLERANCE_LTE_REL);
+    // LTE tolerances come from the caller (Simulation.to_c inherits the
+    // simulation's), so the emitted controller and the reference run accept the
+    // same steps. The remaining controller constants mirror the Solver defaults.
+    let atol = cx.lit(cx.tolerances.abs);
+    let rtol = cx.lit(cx.tolerances.rel);
     let beta = cx.lit(constants::SOL_BETA);
     let smin = cx.lit(constants::SOL_SCALE_MIN);
     let smax = cx.lit(constants::SOL_SCALE_MAX);
@@ -360,4 +365,45 @@ fn emit_adaptive(t: &Tableau, cx: &SolverCtx) -> String {
     }
     out.push_str("}\n");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::solvers::tableaus;
+
+    fn ctx(tolerances: Tolerances) -> SolverCtx<'static> {
+        SolverCtx {
+            name: "m",
+            n_state: 1,
+            real: "double",
+            numeric: Numeric::Double,
+            has_events: false,
+            has_sig: false,
+            tolerances,
+        }
+    }
+
+    fn tableau(name: &str) -> &'static Tableau {
+        tableaus::ALL.iter().find(|t| t.name == name).expect("tableau in the registry")
+    }
+
+    /// The caller's tolerances reach the emitted error scale. Regression guard:
+    /// these used to be the crate constants, so a model with custom LTE
+    /// tolerances generated C that stepped differently than its own reference.
+    #[test]
+    fn adaptive_controller_uses_the_supplied_tolerances() {
+        let c = emit(tableau("RKBS32"), &ctx(Tolerances { abs: 1e-9, rel: 1.5e-7 })).unwrap();
+        assert!(c.contains("1e-9"), "atol missing from the emitted scale:\n{c}");
+        assert!(c.contains("1.5e-7"), "rtol missing from the emitted scale:\n{c}");
+    }
+
+    /// Fixed-step tableaus have no error control, so the tolerances must not
+    /// leak into their output at all.
+    #[test]
+    fn fixed_step_ignores_tolerances() {
+        let c = emit(tableau("RK4"), &ctx(Tolerances { abs: 1e-9, rel: 1.5e-7 })).unwrap();
+        assert!(!c.contains("1e-9"));
+        assert!(!c.contains("1.5e-7"));
+    }
 }

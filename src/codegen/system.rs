@@ -39,11 +39,14 @@ fn unsupported(s: impl Into<String>) -> CodegenError {
     CodegenError::Unsupported(s.into())
 }
 
-/// A connection over flattened leaf-block indices: no interface, no subsystems.
-struct FlatConn {
-    /// `(flat block index, output port, optional channel elems)`.
-    src: (usize, u32, Option<Vec<u32>>),
-    targets: Vec<(usize, u32, Option<Vec<u32>>)>,
+/// One fully resolved wire: a leaf output element drives a leaf input element.
+/// Flattening reduces every connection — through any depth of subsystem — to a
+/// list of these, so wiring is a plain element-to-element map with no port or
+/// interface indirection left to interpret downstream.
+#[derive(Clone, Copy)]
+struct FlatWire {
+    src: ElemRef,
+    dst: ElemRef,
 }
 
 /// One external-input wire: a root-interface input element feeds a leaf block's
@@ -65,36 +68,109 @@ struct ExtWire {
 struct Flat<'a> {
     blocks: Vec<&'a Block>,
     names: Vec<String>,
-    conns: Vec<FlatConn>,
+    conns: Vec<FlatWire>,
     /// Number of external input elements (root-interface inputs, flattened).
     n_input: usize,
     /// External-input wiring: which leaf input elements read `u[]`.
     ext_wiring: Vec<ExtWire>,
     /// Name per external input element (`port` or `port[elem]`).
     input_names: Vec<String>,
-    /// Leaf source endpoints driving the root-interface output ports. The signals
-    /// they reference are the FMU's true outputs; others are locals.
-    iface_out: Vec<Endpoint>,
+    /// Leaf output elements driving the root-interface outputs. The signals they
+    /// reference are the FMU's true outputs; others are locals.
+    iface_out: Vec<ElemRef>,
     /// Whether the root carries an interface (so non-interface block outputs are
     /// `local`, not `output`). A closed model exposes all block outputs.
     has_root_interface: bool,
 }
 
-/// A flat endpoint `(flat block index, port, optional elems)`.
-type Endpoint = (usize, u32, Option<Vec<u32>>);
+/// A leaf endpoint at ELEMENT granularity: `(flat block index, flat element
+/// index)` into that block's concatenated input (or output) ports.
+///
+/// Splices are resolved per element, not per port, because a port carries `size`
+/// channels and connections address them individually: `Connection(iface[1],
+/// blk[1])` is IR `port 0, elems [1]` on a width-2 port, not "port 1". Resolving
+/// a subsystem's input port as a whole made every connection into it collapse
+/// onto the same target list, so the last one won and every channel of a
+/// multi-input subsystem read the same signal.
+type ElemRef = (usize, usize);
 
 /// How a child resolves after flattening: a single leaf, or a subsystem whose
-/// interface ports splice to inner leaf endpoints. A subsystem's maps already
-/// hold *leaf* endpoints (its own inner subsystems are resolved recursively), so
+/// interface *elements* splice to inner leaf elements. A subsystem's maps already
+/// hold *leaf* elements (its own inner subsystems are resolved recursively), so
 /// a parent splices uniformly regardless of nesting depth.
 enum ChildRef {
     Leaf(usize),
     Sub {
-        /// Inner leaf targets fed by each interface *input* port.
-        in_targets: Vec<Vec<Endpoint>>,
-        /// Inner leaf source driving each interface *output* port.
-        out_src: Vec<Option<Endpoint>>,
+        /// Per interface *input* element: the inner leaf input elements it feeds.
+        in_targets: Vec<Vec<ElemRef>>,
+        /// Per interface *output* element: the inner leaf output element driving it.
+        out_src: Vec<Option<ElemRef>>,
     },
+}
+
+/// Flat element indices addressed by `(port, elems)` over `sizes`, in connection
+/// order. `elems = None` means the whole port.
+fn addressed_elems(sizes: &[u32], port: u32, elems: &Option<Vec<u32>>) -> R<Vec<usize>> {
+    let pre = port_offset(sizes, port)?;
+    let size = *sizes
+        .get(port as usize)
+        .ok_or_else(|| unsupported("connection port out of range"))?;
+    let sel: Vec<u32> = elems.clone().unwrap_or_else(|| (0..size).collect());
+    Ok(sel.into_iter().map(|e| pre + e as usize).collect())
+}
+
+/// Input-port element sizes of a block.
+fn in_sizes_of(b: &Block) -> Vec<u32> {
+    b.ports.inputs.iter().map(|p| p.size).collect()
+}
+
+/// Does this block's OUTPUT depend on its inputs within one evaluation (direct
+/// feedthrough)? A block whose `alg` region reads no input — an Integrator
+/// (`y = x`), a source — breaks a feedback path, so it imposes no ordering
+/// constraint and a loop through it is not an algebraic loop.
+fn has_feedthrough(b: &Block) -> bool {
+    region_reads_input(&b.regions.alg)
+}
+
+/// Evaluation order for the algebraic pass over the flattened blocks.
+///
+/// Kahn's algorithm over the resolved wires, always taking the lowest ready
+/// index, so a flat order that is already valid comes back unchanged and only
+/// genuine violations are reordered. Edges exist only into blocks with direct
+/// feedthrough: a state block's output is its state, so feedback through it is
+/// not an ordering constraint. Any block left over (a cycle that slipped past
+/// the per-scope loop rejection) is appended in index order rather than dropped.
+fn topo_order(n: usize, wires: &[FlatWire], blocks: &[&Block]) -> Vec<usize> {
+    let mut deps: Vec<std::collections::BTreeSet<usize>> = vec![Default::default(); n];
+    for w in wires {
+        if w.src.0 != w.dst.0 && has_feedthrough(blocks[w.dst.0]) {
+            deps[w.dst.0].insert(w.src.0);
+        }
+    }
+    let mut done = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    for _ in 0..n {
+        let next = (0..n).find(|&i| !done[i] && deps[i].iter().all(|&d| done[d]));
+        match next {
+            Some(i) => {
+                done[i] = true;
+                order.push(i);
+            }
+            None => break,
+        }
+    }
+    order.extend((0..n).filter(|&i| !done[i]));
+    order
+}
+
+/// Output-port element sizes of a block.
+fn out_sizes_of(b: &Block) -> Vec<u32> {
+    b.ports.outputs.iter().map(|p| p.size).collect()
+}
+
+/// Element sizes of an interface's input (or output) ports.
+fn iface_sizes(ports: &[crate::ir::schema::Port]) -> Vec<u32> {
+    ports.iter().map(|p| p.size).collect()
 }
 
 /// Flatten an IR module into leaf blocks + flat connections, inlining nested
@@ -102,7 +178,7 @@ enum ChildRef {
 fn flatten(module: &Module) -> R<Flat<'_>> {
     let mut blocks: Vec<&Block> = Vec::new();
     let mut names: Vec<String> = Vec::new();
-    let mut conns: Vec<FlatConn> = Vec::new();
+    let mut conns: Vec<FlatWire> = Vec::new();
     // Capture the root's resolved child refs so root-interface inputs can be
     // wired to leaf input elements through arbitrary nesting (a closed model with
     // no root interface simply has no interface-input connections to resolve).
@@ -113,7 +189,7 @@ fn flatten(module: &Module) -> R<Flat<'_>> {
     // *pre-drop* flat indices (the ones `root_refs` holds), then drop sinks and
     // remap the surviving block indices.
     let (n_input, ext_pre, input_names) = root_external_inputs(&module.root, &blocks, &root_refs)?;
-    let out_pre = root_interface_outputs(&module.root, &root_refs)?;
+    let out_pre = root_interface_outputs(&module.root, &blocks, &root_refs)?;
     let has_root_interface =
         !module.root.interface.inputs.is_empty() || !module.root.interface.outputs.is_empty();
     let (blocks, names, conns, new_index) = drop_sink_blocks(blocks, names, conns);
@@ -121,17 +197,19 @@ fn flatten(module: &Module) -> R<Flat<'_>> {
         .into_iter()
         .filter_map(|w| new_index[w.block].map(|nb| ExtWire { block: nb, ..w }))
         .collect();
-    let iface_out: Vec<Endpoint> = out_pre
-        .into_iter()
-        .filter_map(|(b, p, e)| new_index[b].map(|nb| (nb, p, e)))
-        .collect();
+    let iface_out: Vec<ElemRef> =
+        out_pre.into_iter().filter_map(|(b, e)| new_index[b].map(|nb| (nb, e))).collect();
     Ok(Flat { blocks, names, conns, n_input, ext_wiring, input_names, iface_out, has_root_interface })
 }
 
 /// Resolve the leaf source endpoint driving each root-interface *output* port
 /// (over pre-sink-drop flat indices). The signals these endpoints reference are
 /// the FMU's true outputs (`causality=output`); other block outputs are locals.
-fn root_interface_outputs(root: &Subsystem, child_refs: &[ChildRef]) -> R<Vec<Endpoint>> {
+fn root_interface_outputs(
+    root: &Subsystem,
+    blocks: &[&Block],
+    child_refs: &[ChildRef],
+) -> R<Vec<ElemRef>> {
     let mut out = Vec::new();
     for c in &root.connections {
         for t in &c.targets {
@@ -141,7 +219,7 @@ fn root_interface_outputs(root: &Subsystem, child_refs: &[ChildRef]) -> R<Vec<En
             if c.src.block == BlockId::INTERFACE {
                 return Err(unsupported("interface pass-through connection"));
             }
-            out.push(resolve_src(child_refs, c.src.block, c.src.port, &c.src.elems)?);
+            out.extend(resolve_src(child_refs, blocks, root, c.src.block, c.src.port, &c.src.elems)?);
         }
     }
     Ok(out)
@@ -164,11 +242,9 @@ fn root_external_inputs(
         return Ok((0, Vec::new(), Vec::new()));
     }
     // Flat external-input layout: concatenate the interface input ports.
-    let mut port_off = Vec::with_capacity(in_ports.len());
     let mut n_input = 0usize;
     let mut input_names = Vec::new();
     for p in in_ports {
-        port_off.push(n_input);
         for e in 0..p.size {
             input_names.push(if p.size == 1 { p.name.clone() } else { format!("{}[{e}]", p.name) });
         }
@@ -180,33 +256,19 @@ fn root_external_inputs(
         if c.src.block != BlockId::INTERFACE {
             continue; // internal / interface-output connections: handled by flatten_scope
         }
-        let k = c.src.port as usize;
-        let ksize = in_ports
-            .get(k)
-            .ok_or_else(|| unsupported("interface input port out of range"))?
-            .size;
-        let off_k = port_off[k];
-        let s_elems: Vec<u32> = c.src.elems.clone().unwrap_or_else(|| (0..ksize).collect());
+        // Flat external-input elements this connection addresses, paired
+        // positionally with the leaf input elements they reach.
+        let ifc = addressed_elems(&iface_sizes(in_ports), c.src.port, &c.src.elems)?;
         for t in &c.targets {
             if t.block == BlockId::INTERFACE {
                 return Err(unsupported("interface pass-through connection"));
             }
-            // Resolve through nested subsystems to leaf endpoints (one for a leaf
-            // target, several for a subsystem input that fans in). Each endpoint's
-            // input elements pair positionally with this interface port's elements.
-            for (eb, eport, eelems) in resolve_target(child_refs, t.block, t.port, &t.elems)? {
-                let e_sizes: Vec<u32> = blocks[eb].ports.inputs.iter().map(|p| p.size).collect();
-                let e_pre = port_offset(&e_sizes, eport)?;
-                let e_size = *e_sizes
-                    .get(eport as usize)
-                    .ok_or_else(|| unsupported("interface-input target port out of range"))?;
-                let e_elems: Vec<u32> = eelems.unwrap_or_else(|| (0..e_size).collect());
-                for (se, te) in s_elems.iter().zip(e_elems.iter()) {
-                    wiring.push(ExtWire {
-                        ext_idx: off_k + *se as usize,
-                        block: eb,
-                        in_elem: e_pre + *te as usize,
-                    });
+            // Resolve through nested subsystems to leaf input elements (one per
+            // addressed element, several when a subsystem input fans out).
+            let eps = resolve_target(child_refs, blocks, root, t.block, t.port, &t.elems)?;
+            for (ie, dsts) in ifc.iter().zip(eps) {
+                for (eb, e_elem) in dsts {
+                    wiring.push(ExtWire { ext_idx: *ie, block: eb, in_elem: e_elem });
                 }
             }
         }
@@ -223,8 +285,8 @@ fn root_external_inputs(
 fn drop_sink_blocks(
     blocks: Vec<&Block>,
     names: Vec<String>,
-    conns: Vec<FlatConn>,
-) -> (Vec<&Block>, Vec<String>, Vec<FlatConn>, Vec<Option<usize>>) {
+    conns: Vec<FlatWire>,
+) -> (Vec<&Block>, Vec<String>, Vec<FlatWire>, Vec<Option<usize>>) {
     let keep: Vec<bool> = blocks.iter().map(|b| !matches!(b.role, BlockRole::Sink)).collect();
     // Old flat index -> new index among the kept blocks (identity when no sinks).
     let mut new_index = vec![None; blocks.len()];
@@ -245,19 +307,10 @@ fn drop_sink_blocks(
         names.into_iter().zip(&keep).filter(|(_, &k)| k).map(|(n, _)| n).collect();
 
     let mut kept_conns = Vec::with_capacity(conns.len());
-    for c in conns {
-        let (sbi, sport, ssel) = c.src;
+    for w in conns {
         // A sink has no outputs, so it is never a source; guard anyway.
-        let Some(nsbi) = new_index[sbi] else { continue };
-        let targets: Vec<_> = c
-            .targets
-            .into_iter()
-            .filter_map(|(tbi, tport, tsel)| new_index[tbi].map(|nt| (nt, tport, tsel)))
-            .collect();
-        if targets.is_empty() {
-            continue;
-        }
-        kept_conns.push(FlatConn { src: (nsbi, sport, ssel), targets });
+        let (Some(ns), Some(nd)) = (new_index[w.src.0], new_index[w.dst.0]) else { continue };
+        kept_conns.push(FlatWire { src: (ns, w.src.1), dst: (nd, w.dst.1) });
     }
 
     (kept_blocks, kept_names, kept_conns, new_index)
@@ -272,7 +325,7 @@ fn flatten_scope<'a>(
     prefix: &str,
     blocks: &mut Vec<&'a Block>,
     names: &mut Vec<String>,
-    conns: &mut Vec<FlatConn>,
+    conns: &mut Vec<FlatWire>,
     capture_child_refs: Option<&mut Vec<ChildRef>>,
 ) -> R<ChildRef> {
     let qualify = |name: &str| -> String {
@@ -327,33 +380,51 @@ fn flatten_scope<'a>(
 
     // Route this scope's connections: interface-touching ones build the splice
     // maps; the rest are inlined into `conns` with both ends resolved to leaves.
-    let mut in_targets: Vec<Vec<Endpoint>> = vec![Vec::new(); scope.interface.inputs.len()];
-    let mut out_src: Vec<Option<Endpoint>> = vec![None; scope.interface.outputs.len()];
+    // Everything is per ELEMENT — a width-N interface port is N independent
+    // channels, and pairing them positionally is what a connection means.
+    let in_sizes = iface_sizes(&scope.interface.inputs);
+    let out_sizes = iface_sizes(&scope.interface.outputs);
+    let mut in_targets: Vec<Vec<ElemRef>> =
+        vec![Vec::new(); in_sizes.iter().map(|s| *s as usize).sum()];
+    let mut out_src: Vec<Option<ElemRef>> =
+        vec![None; out_sizes.iter().map(|s| *s as usize).sum()];
     for c in &scope.connections {
         let src_iface = c.src.block == BlockId::INTERFACE;
         for t in &c.targets {
             let tgt_iface = t.block == BlockId::INTERFACE;
             match (src_iface, tgt_iface) {
-                // interface input -> inner: record the inner leaf targets it feeds
+                // interface input -> inner: record the inner leaf elements each
+                // addressed interface element feeds
                 (true, false) => {
-                    let eps = resolve_target(&child_refs, t.block, t.port, &t.elems)?;
-                    in_targets
-                        .get_mut(c.src.port as usize)
-                        .ok_or_else(|| unsupported("interface input port out of range"))?
-                        .extend(eps);
+                    let ifc = addressed_elems(&in_sizes, c.src.port, &c.src.elems)?;
+                    let eps = resolve_target(&child_refs, blocks, scope, t.block, t.port, &t.elems)?;
+                    for (ie, dst) in ifc.into_iter().zip(eps) {
+                        in_targets
+                            .get_mut(ie)
+                            .ok_or_else(|| unsupported("interface input element out of range"))?
+                            .extend(dst);
+                    }
                 }
-                // inner -> interface output: record the inner leaf source driving it
+                // inner -> interface output: record the inner leaf element driving each
                 (false, true) => {
-                    let ep = resolve_src(&child_refs, c.src.block, c.src.port, &c.src.elems)?;
-                    *out_src
-                        .get_mut(t.port as usize)
-                        .ok_or_else(|| unsupported("interface output port out of range"))? = Some(ep);
+                    let ifc = addressed_elems(&out_sizes, t.port, &t.elems)?;
+                    let eps = resolve_src(&child_refs, blocks, scope, c.src.block, c.src.port, &c.src.elems)?;
+                    for (oe, src) in ifc.into_iter().zip(eps) {
+                        *out_src
+                            .get_mut(oe)
+                            .ok_or_else(|| unsupported("interface output element out of range"))? =
+                            Some(src);
+                    }
                 }
-                // inner -> inner: inline directly
+                // inner -> inner: inline directly, one wire per element pair
                 (false, false) => {
-                    let src = resolve_src(&child_refs, c.src.block, c.src.port, &c.src.elems)?;
-                    let targets = resolve_target(&child_refs, t.block, t.port, &t.elems)?;
-                    conns.push(FlatConn { src, targets });
+                    let src = resolve_src(&child_refs, blocks, scope, c.src.block, c.src.port, &c.src.elems)?;
+                    let targets = resolve_target(&child_refs, blocks, scope, t.block, t.port, &t.elems)?;
+                    for (s, dsts) in src.into_iter().zip(targets) {
+                        for d in dsts {
+                            conns.push(FlatWire { src: s, dst: d });
+                        }
+                    }
                 }
                 (true, true) => return Err(unsupported("interface pass-through connection")),
             }
@@ -371,43 +442,93 @@ fn flatten_scope<'a>(
     Ok(ChildRef::Sub { in_targets, out_src })
 }
 
-/// Resolve a connection *source* through `child_refs` to a single leaf endpoint,
-/// following a subsystem's driven output port inward.
+/// Resolve a connection *source* `(block, port, elems)` to leaf OUTPUT elements,
+/// one per addressed element, following a subsystem's driven outputs inward.
 fn resolve_src(
     child_refs: &[ChildRef],
+    blocks: &[&Block],
+    scope: &Subsystem,
     block: BlockId,
     port: u32,
     elems: &Option<Vec<u32>>,
-) -> R<Endpoint> {
+) -> R<Vec<ElemRef>> {
     match child_refs
         .get(block.0 as usize)
         .ok_or_else(|| unsupported("connection from unknown block"))?
     {
-        ChildRef::Leaf(fi) => Ok((*fi, port, elems.clone())),
-        ChildRef::Sub { out_src, .. } => out_src
-            .get(port as usize)
-            .and_then(|o| o.clone())
-            .ok_or_else(|| unsupported("subsystem output port is not driven internally")),
+        ChildRef::Leaf(fi) => {
+            let sizes = out_sizes_of(blocks[*fi]);
+            Ok(addressed_elems(&sizes, port, elems)?.into_iter().map(|e| (*fi, e)).collect())
+        }
+        ChildRef::Sub { out_src, .. } => {
+            // The child's own interface sizes: a subsystem child's ports mirror
+            // its interface, so address the element space the same way.
+            let sizes = child_iface_sizes(scope, block, false)?;
+            addressed_elems(&sizes, port, elems)?
+                .into_iter()
+                .map(|e| {
+                    out_src
+                        .get(e)
+                        .copied()
+                        .flatten()
+                        .ok_or_else(|| unsupported("subsystem output element is not driven internally"))
+                })
+                .collect()
+        }
     }
 }
 
-/// Resolve a connection *target* through `child_refs` to leaf endpoints (a
-/// subsystem input port fans out to the inner targets it feeds).
+/// Resolve a connection *target* `(block, port, elems)` to leaf INPUT elements.
+/// Each addressed element yields the inner elements it feeds (a subsystem input
+/// element can fan out to several), kept grouped so the caller can pair them
+/// positionally with the source elements.
 fn resolve_target(
     child_refs: &[ChildRef],
+    blocks: &[&Block],
+    scope: &Subsystem,
     block: BlockId,
     port: u32,
     elems: &Option<Vec<u32>>,
-) -> R<Vec<Endpoint>> {
+) -> R<Vec<Vec<ElemRef>>> {
     match child_refs
         .get(block.0 as usize)
         .ok_or_else(|| unsupported("connection to unknown block"))?
     {
-        ChildRef::Leaf(fi) => Ok(vec![(*fi, port, elems.clone())]),
-        ChildRef::Sub { in_targets, .. } => in_targets
-            .get(port as usize)
-            .cloned()
-            .ok_or_else(|| unsupported("subsystem input port out of range")),
+        ChildRef::Leaf(fi) => {
+            let sizes = in_sizes_of(blocks[*fi]);
+            Ok(addressed_elems(&sizes, port, elems)?
+                .into_iter()
+                .map(|e| vec![(*fi, e)])
+                .collect())
+        }
+        ChildRef::Sub { in_targets, .. } => {
+            let sizes = child_iface_sizes(scope, block, true)?;
+            addressed_elems(&sizes, port, elems)?
+                .into_iter()
+                .map(|e| {
+                    in_targets
+                        .get(e)
+                        .cloned()
+                        .ok_or_else(|| unsupported("subsystem input element out of range"))
+                })
+                .collect()
+        }
+    }
+}
+
+/// Interface port sizes of a child subsystem of `scope` (`inputs` when `is_in`).
+fn child_iface_sizes(scope: &Subsystem, block: BlockId, is_in: bool) -> R<Vec<u32>> {
+    match scope
+        .children
+        .get(block.0 as usize)
+        .ok_or_else(|| unsupported("connection references an unknown child"))?
+    {
+        Child::Subsystem(s) => Ok(iface_sizes(if is_in {
+            &s.interface.inputs
+        } else {
+            &s.interface.outputs
+        })),
+        Child::Block(_) => Err(unsupported("expected a subsystem child")),
     }
 }
 
@@ -565,30 +686,19 @@ fn build_plan<'a>(flat: Flat<'a>) -> R<Plan<'a>> {
         }
     }
 
-    // Element-level input wiring from connections, honouring `elems` slicing.
+    // Element-level input wiring. Flattening already resolved every connection —
+    // through any depth of subsystem — to element-to-element wires, so this is a
+    // direct map with no port or interface indirection left.
     let mut input_src: Vec<Vec<Option<usize>>> =
         in_sizes.iter().map(|s| vec![None; total_elems(s)]).collect();
-    for c in &flat.conns {
-        let (sbi, sport, ref s_sel) = c.src;
+    for w in &flat.conns {
         let s_base = out_off
-            .get(sbi)
+            .get(w.src.0)
             .copied()
             .flatten()
             .ok_or_else(|| unsupported("connection from a block with no outputs"))?;
-        let s_pre = port_offset(&out_sizes[sbi], sport)?;
-        let s_size = out_sizes[sbi][sport as usize];
-        let s_elems: Vec<u32> = s_sel.clone().unwrap_or_else(|| (0..s_size).collect());
-        for (tbi, tport, t_sel) in &c.targets {
-            let t_pre = port_offset(&in_sizes[*tbi], *tport)?;
-            let t_size = in_sizes[*tbi][*tport as usize];
-            let t_elems: Vec<u32> = t_sel.clone().unwrap_or_else(|| (0..t_size).collect());
-            for (se, te) in s_elems.iter().zip(t_elems.iter()) {
-                let ssig = s_base + s_pre + *se as usize;
-                let tin = t_pre + *te as usize;
-                if let Some(slot) = input_src.get_mut(*tbi).and_then(|v| v.get_mut(tin)) {
-                    *slot = Some(ssig);
-                }
-            }
+        if let Some(slot) = input_src.get_mut(w.dst.0).and_then(|v| v.get_mut(w.dst.1)) {
+            *slot = Some(s_base + w.src.1);
         }
     }
 
@@ -603,27 +713,26 @@ fn build_plan<'a>(flat: Flat<'a>) -> R<Plan<'a>> {
     }
 
     // Interface-output signal indices (the FMU's true outputs): convert the
-    // resolved leaf endpoints to `sig[]` indices via the output layout.
+    // resolved leaf output elements to `sig[]` indices via the output layout.
     let mut iface_output_sigs = Vec::new();
-    for (b, port, elems) in &flat.iface_out {
+    for (b, elem) in &flat.iface_out {
         let base = out_off
             .get(*b)
             .copied()
             .flatten()
             .ok_or_else(|| unsupported("interface output driven by a block with no outputs"))?;
-        let pre = port_offset(&out_sizes[*b], *port)?;
-        let size = out_sizes[*b][*port as usize];
-        let es: Vec<u32> = elems.clone().unwrap_or_else(|| (0..size).collect());
-        for e in es {
-            iface_output_sigs.push(base + pre + e as usize);
-        }
+        iface_output_sigs.push(base + elem);
     }
 
-    // Algebraic-pass order: the flattener already emitted blocks in the IR
-    // schedule's topo order (the single, port-granular source of truth, see
-    // `flatten_scope`), so the flat index order IS the evaluation order. Real
-    // algebraic loops were rejected per-scope during flattening. No recompute.
-    let topo: Vec<usize> = (0..n).collect();
+    // Algebraic-pass order. Each scope's own children come out in that scope's
+    // IR schedule order, but inlining a subsystem splices its children in at the
+    // subsystem's position — and the parent schedule ranks a subsystem by its
+    // own dependencies, not its children's. So a subsystem's inner block can
+    // land before the parent-level block that feeds it, and the flat index order
+    // is NOT a valid global evaluation order. Sort over the resolved wires
+    // instead: they are the actual data dependencies after flattening.
+    // Real algebraic loops were already rejected per scope.
+    let topo = topo_order(n, &flat.conns, &blocks);
 
     Ok(Plan {
         blocks, names, topo, out_off, n_sig, state_off, n_state, in_sizes, input_src,
@@ -2372,6 +2481,7 @@ fn build_struct_ctx(module: &Module, opts: &CodegenOptions) -> R<StructCtx> {
             numeric: opts.numeric,
             has_events: !events.is_empty(),
             has_sig: plan.n_sig > 0,
+            tolerances: opts.tolerances,
         };
         init_body.push_str(&solver::init_body(t));
         (solver::emit(t, &scx)?, solver::struct_fields(t, opts.numeric.real()))

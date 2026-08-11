@@ -19,7 +19,7 @@ use pyo3::types::PyDict;
 
 use crate::codegen::{
     CodegenOptions, GeneratedFile, Layout, ModelApi, Numeric, Reductions,
-    SolverChoice, Structure,
+    SolverChoice, Structure, Tolerances,
 };
 
 /// Resolve a string option against its allowed values, or raise `ValueError`
@@ -119,6 +119,36 @@ pub(crate) fn options_from_strs(
         )?,
         solver: resolve_solver(solver)?,
         api: parse_opt("api", api, &[("struct", ModelApi::Struct)])?,
+        tolerances: Tolerances::default(),
+    })
+}
+
+/// Resolve the `atol`/`rtol` kwargs against a fallback (the simulation's own
+/// tolerances for `to_c`, the crate defaults where there is no simulation).
+/// `None` keeps the fallback; a supplied value must be finite and positive —
+/// a zero or negative tolerance makes the emitted error scale collapse and the
+/// step controller reject forever.
+pub(crate) fn resolve_tolerances(
+    atol: Option<f64>,
+    rtol: Option<f64>,
+    fallback: Tolerances,
+) -> PyResult<Tolerances> {
+    let check = |name: &str, v: f64| -> PyResult<f64> {
+        if v.is_finite() && v > 0.0 {
+            Ok(v)
+        } else {
+            Err(PyValueError::new_err(format!("{name}: must be a finite positive number, got {v}")))
+        }
+    };
+    Ok(Tolerances {
+        abs: match atol {
+            Some(v) => check("atol", v)?,
+            None => fallback.abs,
+        },
+        rel: match rtol {
+            Some(v) => check("rtol", v)?,
+            None => fallback.rel,
+        },
     })
 }
 
@@ -190,6 +220,11 @@ pub(crate) fn generate_to_dict<'py>(
 ///   states / signals / parameters / memory, with ``get_signal`` / ``set_signal``
 ///   accessors by id. Reentrant by construction (each instance owns its state)
 ///   and embeddable (inputs are set through ``set_signal``).
+/// - ``atol`` / ``rtol``: LTE tolerances inlined into an ADAPTIVE solver's step
+///   controller (``scale = atol + rtol*|x|``). Default to the engine defaults;
+///   fixed-step tableaus ignore them. Use ``Simulation.to_c``, which inherits
+///   the simulation's own tolerances, when the generated C must take the same
+///   steps as the reference run.
 ///
 /// The emitted API (``<name>_t``, ``<NAME>_SIG_*`` ids, ``<name>_run`` semantics,
 /// event handling, ``jvp``), the C99 + libm requirement, the model-name symbol
@@ -210,6 +245,8 @@ pub(crate) fn generate_to_dict<'py>(
     scaffold = false,
     trace = false,
     a2l = false,
+    atol = None,
+    rtol = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn generate_c<'py>(
@@ -224,10 +261,14 @@ pub fn generate_c<'py>(
     scaffold: bool,
     trace: bool,
     a2l: bool,
+    atol: Option<f64>,
+    rtol: Option<f64>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let module: crate::ir::schema::Module = serde_json::from_str(ir_json)
         .map_err(|e| PyValueError::new_err(format!("invalid IR JSON: {e}")))?;
-    let opts = options_from_strs(numeric, reductions, structure, layout, solver, api, scaffold, trace, a2l)?;
+    let mut opts = options_from_strs(numeric, reductions, structure, layout, solver, api, scaffold, trace, a2l)?;
+    // No simulation to inherit from here, so the crate defaults are the fallback.
+    opts.tolerances = resolve_tolerances(atol, rtol, Tolerances::default())?;
     // No simulation (and thus no per-sim log flag) here — log like the
     // Simulation default (log=True).
     let log = crate::utils::logger::Logger::new(true, "");

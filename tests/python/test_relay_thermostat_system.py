@@ -126,6 +126,66 @@ class TestRelayThermostatSystem(unittest.TestCase):
                 self.assertTrue(np.max(temp[mask]) < 24.0)
 
 
+    def test_thermostat_generates_c_and_matches_the_reference(self):
+        """The relay's zero-crossing events lower to C, and the compiled
+        trajectory matches the reference over the full fixed-step run."""
+
+        files = self.Sim.to_c("thermostat", solver="rk4")
+        self.assertIn("thermostat.c", files)
+        self.assertIn("thermostat.h", files)
+        #the relay contributes two zero-cross events (rising/falling threshold)
+        self.assertIn("thermostat_handle_events", files["thermostat.c"])
+
+        report = self.Sim.verify_c("thermostat", duration=30.0, dt=0.01, solver="rk4")
+        self.assertTrue(report["passed"],
+            f"C run diverged from the reference: {report['max_scaled_error']:.3e} "
+            f"at t={report['worst_time']}")
+
+
+    def test_to_c_inherits_the_simulation_tolerances(self):
+        """An adaptive solver's emitted error scale carries THIS simulation's
+        LTE tolerances, so the generated C accepts the same steps the reference
+        does. Explicit atol/rtol override them."""
+
+        import re
+
+        def scale(src):
+            m = re.search(r"double scale = ([^;]+);", src)
+            self.assertIsNotNone(m, "adaptive solver emitted no error scale")
+            return m.group(1)
+
+        self.Sim.set_solver(RKBS32, tolerance_lte_abs=1e-9, tolerance_lte_rel=1.5e-7)
+        inherited = scale(self.Sim.to_c("m", solver="rkbs32")["m.c"])
+        self.assertIn("1e-9", inherited)
+        self.assertIn("1.5e-7", inherited)
+
+        overridden = scale(self.Sim.to_c("m", solver="rkbs32", atol=2e-5, rtol=3e-4)["m.c"])
+        self.assertIn("2e-5", overridden)
+        self.assertIn("0.0003", overridden)
+
+        #a fixed-step tableau has no error control and must not carry them
+        self.assertNotIn("1e-9", self.Sim.to_c("m", solver="rk4")["m.c"])
+
+        for bad in ({"atol": 0.0}, {"rtol": -1.0}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    self.Sim.to_c("m", solver="rkbs32", **bad)
+
+
+    def test_set_solver_keeps_the_simulation_tolerances(self):
+        """Swapping the solver without naming tolerances must not silently
+        retune the model to the engine defaults."""
+
+        sim = Simulation(
+            [self.Int, self.Rly, self.Sco], [], dt=0.01, log=False,
+            Solver=RKBS32, tolerance_lte_abs=1e-9, tolerance_lte_rel=1.5e-7,
+            )
+        sim.set_solver(RKDP54)
+        src = sim.to_c("m", solver="rkdp54")["m.c"]
+        self.assertIn("1e-9", src)
+        self.assertIn("1.5e-7", src)
+
+
     def test_thermostat_with_implicit_solvers(self):
         """Test thermostat with implicit adaptive solvers"""
 

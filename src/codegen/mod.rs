@@ -30,6 +30,8 @@
 
 use std::fmt;
 
+use crate::constants;
+
 use crate::ir::schema::{
     BinOpKind, CmpKind, NodeId, Op, ReduceKind, Region, UnaryOpKind, Write,
 };
@@ -91,6 +93,28 @@ pub struct GeneratedFile {
 // Settings
 // ======================================================================================
 
+/// Local-truncation-error tolerances baked into an emitted adaptive step
+/// controller (`scale = abs + rel * |x|`, the same form the runtime solvers
+/// use). Ignored by fixed-step tableaus, which have no error control.
+///
+/// These MUST match the tolerances the reference run uses, or the generated C
+/// and the engine take different step sequences on the same model. `to_c`
+/// therefore inherits them from the simulation by default rather than pinning
+/// the crate defaults.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tolerances {
+    /// Absolute LTE tolerance (`tolerance_lte_abs`).
+    pub abs: f64,
+    /// Relative LTE tolerance (`tolerance_lte_rel`).
+    pub rel: f64,
+}
+
+impl Default for Tolerances {
+    fn default() -> Self {
+        Self { abs: constants::SOL_TOLERANCE_LTE_ABS, rel: constants::SOL_TOLERANCE_LTE_REL }
+    }
+}
+
 /// Full code-generation configuration. One field per pipeline stage.
 #[derive(Debug, Clone, Default)]
 pub struct CodegenOptions {
@@ -100,6 +124,9 @@ pub struct CodegenOptions {
     pub layout: Layout,
     pub solver: SolverChoice,
     pub api: ModelApi,
+    /// LTE tolerances for the emitted adaptive step controller. Defaults to the
+    /// crate defaults; `Simulation.to_c` overrides them with the simulation's.
+    pub tolerances: Tolerances,
     /// Additionally emit the build scaffold: a `CMakeLists.txt` (static model
     /// library + demo executable) and an EDITABLE `<name>_main.c` demo driver
     /// that steps the model via `<name>_step` and prints a CSV trajectory,
@@ -144,6 +171,13 @@ impl CodegenOptions {
                 Reductions::Vectorized => "vectorized",
             },
         );
+        // Only meaningful for a tableau that actually runs the step controller.
+        if self.solver.tableau().is_adaptive() {
+            s.push_str(&format!(
+                ", atol: {}, rtol: {}",
+                self.tolerances.abs, self.tolerances.rel
+            ));
+        }
         for (on, name) in [(self.scaffold, "scaffold"), (self.trace, "trace"), (self.a2l, "a2l")] {
             if on {
                 s.push_str(", ");
