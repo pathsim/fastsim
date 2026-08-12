@@ -1,5 +1,5 @@
 {
-  "generated": "2026-08-12T04:49:47.796780",
+  "generated": "2026-08-12T10:57:34.979262",
   "categories": [
     {
       "name": "Solvers",
@@ -10,6 +10,7 @@
         "ESDIRK4",
         "ESDIRK43",
         "ESDIRK54",
+        "ESDIRK85",
         "EUB",
         "EUF",
         "GEAR52A",
@@ -35,7 +36,6 @@
         "BDF4",
         "BDF5",
         "BDF6",
-        "ESDIRK85",
         "GEAR",
         "GEAR21",
         "GEAR32",
@@ -49,6 +49,7 @@
         "ESDIRK4",
         "ESDIRK43",
         "ESDIRK54",
+        "ESDIRK85",
         "EUB",
         "EUF",
         "GEAR52A",
