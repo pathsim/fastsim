@@ -125,7 +125,9 @@ mod tests {
 
     #[test]
     fn test_event_on_off() {
-        let mut e = Event::with_defaults();
+        // Not `mut`: activation lives behind a shared flag, so `on`/`off` take
+        // `&self` (see `events::active`).
+        let e = Event::with_defaults();
         assert!(e.is_active());
         e.off();
         assert!(!e.is_active());

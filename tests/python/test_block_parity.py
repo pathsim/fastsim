@@ -83,6 +83,22 @@ def _matrix_rejects_nested_list():
         return True
 
 
+def _schedule_fires_a_step_early():
+    """pathsim <=0.24.0 resolved a scheduled event at the START of the step it
+    was found in, so a schedule off the step grid fired up to a full `dt` early.
+    Fixed upstream (pathsim#248) and ported here, which is why the two engines
+    disagree until the fix is released."""
+    import pathsim.events as pe
+
+    fired = []
+    evt = pe.Schedule(t_start=0.05, t_period=0.1, func_act=fired.append)
+    src, sco = PB.Constant(1.0), PB.Scope()
+    sim = ps.Simulation([src, sco], [ps.Connection(src, sco)], events=[evt],
+                        dt=0.01, log=False)
+    sim.run(0.2, reset=True)
+    return bool(fired) and abs(fired[0] - 0.05) > 1e-9
+
+
 def _pending(name, probe, reason):
     """``{name: reason}`` while the installed pathsim still shows the old
     behaviour, ``{}`` once it no longer does."""
@@ -157,6 +173,13 @@ KNOWN_DIVERGENCE = {
     **_pending("Relay", _relay_starts_at_zero,
                "pathsim starts the output at 0.0 instead of `value_down`; "
                "fixed upstream"),
+    # FirstOrderHold interpolates BETWEEN samples, so a one-step shift in when
+    # its schedule fires changes the slope over the whole run, not just at the
+    # sample instants — which is why it is the block that shows this and the
+    # other sampled ones do not.
+    **_pending("FirstOrderHold", _schedule_fires_a_step_early,
+               "pathsim resolves a scheduled event up to one `dt` early, so the "
+               "hold samples at the wrong instants; fixed upstream"),
     # Investigated: NOT a block defect. With clean 0/1 bits both engines rebuild
     # the same code; what differs is whether the DAC's sampling event sees the
     # bit values from before or after the driving edges in the same step. Same
