@@ -13,13 +13,22 @@
 //! independently on each side, so their trajectories are not comparable
 //! sample-by-sample; they are rejected up front rather than compared loosely.
 //!
-//! The C side steps through `<name>_run(m, m->time + dt, dt)` (exactly one
-//! step per call — the generated fixed-step loop runs while
-//! `time < t_end - dt/2`), the reference through
-//! [`CompiledSimulation::run`]`(dt, ..)` (exactly one step per call — the run
-//! loop takes the first step that reaches `t_end`). Both sides accumulate
-//! `time += dt` identically, so the sample times line up bit-for-bit and the
-//! comparison never mixes trajectories at different times.
+//! **How both sides are driven.** The C steps through `<name>_step(m, dt)`, the
+//! documented single-step entry point whose contract is that N calls compose
+//! exactly to `run(t0 + N*dt, dt)`. The reference runs ONCE for the whole
+//! duration and its recorded trajectory is read back.
+//!
+//! Neither is incidental. Driving either side one `run(dt)` call per sample
+//! looks equivalent and is not: `run` sets its event machinery up from scratch
+//! on entry — a fresh solver instance, the schedule re-anchored on the current
+//! time — so chopping a run into single steps shifts every scheduled event.
+//! Continuous models never noticed. Sampled ones (SampleHold, ZeroOrderHold,
+//! Delay, FIR, TappedDelay, StepSource, PulseSource, DiscreteIntegrator) were
+//! all reported at a scaled error around 1e6 against C that is in fact correct
+//! to ~1e-19 — a false alarm on exactly the blocks this check exists for.
+//!
+//! Both sides advance `time += dt` identically, so the sample times line up
+//! bit-for-bit and the comparison never mixes trajectories at different times.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -128,8 +137,53 @@ pub fn find_compiler() -> Option<String> {
             }
         }
     }
-    candidates.extend(["cc", "clang", "gcc", "zig cc"].iter().map(|s| s.to_string()));
+    for name in ["cc", "clang", "gcc"] {
+        let on_path = path_candidates(name);
+        if on_path.is_empty() {
+            candidates.push(name.to_string());
+        } else {
+            candidates.extend(on_path);
+        }
+    }
+    candidates.push("zig cc".to_string());
     candidates.into_iter().find(|cc| compiler_is_sane(cc))
+}
+
+/// Every executable named `name` on PATH, in PATH order.
+///
+/// `Command::new("gcc")` only ever reaches the *first* match, so one broken
+/// toolchain early on PATH hides every working one behind it — which is the
+/// Anaconda MinGW case above: its `gcc`/`cc` ICE on any double, and they shadow
+/// a perfectly good MinGW-w64 further down. Probing each match in turn costs a
+/// few hundred milliseconds once and makes the difference between the codegen
+/// verification running and silently not running at all.
+fn path_candidates(name: &str) -> Vec<String> {
+    // On Windows the name on PATH carries an extension; elsewhere it does not.
+    let exts: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".EXE".to_string())
+            .split(';')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_lowercase())
+            .collect()
+    } else {
+        vec![String::new()]
+    };
+    let Some(path) = std::env::var_os("PATH") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for dir in std::env::split_paths(&path) {
+        for ext in &exts {
+            let cand = dir.join(format!("{name}{ext}"));
+            if cand.is_file() {
+                if let Some(s) = cand.to_str() {
+                    out.push(s.to_string());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Probe with a representative double + libm program so a compiler broken for
@@ -258,7 +312,7 @@ pub fn verify_c(
          \x20   static {sym}_t m;\n\
          \x20   {sym}_init(&m);\n\
          \x20   for (unsigned long k = 0; k <= {n_steps}ul; ++k) {{\n\
-         \x20       if (k) {sym}_run(&m, m.time + {dt:.17e}, {dt:.17e});\n\
+         \x20       if (k) {sym}_step(&m, {dt:.17e});\n\
          \x20       printf(\"%.17g\", (double)m.time);\n\
          \x20       for (unsigned long i = 0; i < {n}ul; ++i) printf(\" %.17g\", (double)m.x[i]);\n\
          \x20       printf(\"\\n\");\n\
@@ -334,21 +388,39 @@ pub fn verify_c(
     reference.dt = opts.dt;
     reference.reset(0.0);
 
+    // One continuous run, then read the recorded trajectory back — NOT one
+    // `run(dt)` call per sample. `run` sets its event machinery up from scratch
+    // each call (a fresh solver instance, the schedule re-anchored on the
+    // current time), so chopping the reference into single-step runs shifts
+    // every scheduled event. Continuous models never noticed; every sampled
+    // block (SampleHold, ZeroOrderHold, Delay, FIR, TappedDelay, ...) was
+    // reported at a scaled error around 1e6 against C that is in fact correct
+    // to ~1e-19 — a false alarm on exactly the blocks this check exists for.
+    reference.run(opts.duration, false, false);
+    let t_ref = reference.times().to_vec();
+    let x_ref = reference.states().to_vec();
+
+    if t_ref.len() < rows.len() {
+        return Err(verr(format!(
+            "reference produced {} samples, C produced {} — the two run loops \
+             disagree; this is a fastsim bug, please report it",
+            t_ref.len(),
+            rows.len()
+        )));
+    }
+
     let mut max_scaled = 0.0f64;
     let mut worst: Option<(usize, f64)> = None; // (state index, time)
     for (k, row) in rows.iter().enumerate() {
-        if k > 0 {
-            reference.run(opts.dt, false, false);
-        }
         let (t_c, x_c) = (row[0], &row[1..]);
-        let t_r = reference.time();
+        let t_r = t_ref[k];
         if (t_c - t_r).abs() > 1e-9 * (1.0 + t_r.abs()) {
             return Err(verr(format!(
                 "sample-time misalignment at step {k}: C t={t_c}, reference t={t_r} \
                  — the two run loops disagree; this is a fastsim bug, please report it"
             )));
         }
-        let x_r = reference.state();
+        let x_r = &x_ref[k];
         for i in 0..n {
             let scaled = (x_c[i] - x_r[i]).abs() / (opts.atol + opts.rtol * x_r[i].abs());
             if scaled > max_scaled {

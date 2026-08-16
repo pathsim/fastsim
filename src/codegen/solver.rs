@@ -43,6 +43,23 @@ pub(crate) const EUF_TABLEAU: Tableau = Tableau {
     di: &[],
 };
 
+/// Backward Euler as a one-stage DIRK tableau, so it flows through the same
+/// generic implicit emitter as DIRK/ESDIRK. Not in the runtime registry
+/// (`tableaus::ALL`) — the runtime drives EUB through a dedicated `eub_factory`
+/// — but numerically identical: `x_{n+1} = x_n + dt·f(x_{n+1}, t_{n+1})`.
+pub(crate) const EUB_TABLEAU: Tableau = Tableau {
+    name: "EUB",
+    kind: TableauKind::DIRK,
+    n: 1,
+    m: 0,
+    s: 1,
+    eval_stages: &[1.0],
+    bt: &[&[1.0]],
+    tr: &[],
+    a_final: &[],
+    di: &[],
+};
+
 /// Everything the integrator emitter needs beyond the tableau itself.
 pub(crate) struct SolverCtx<'a> {
     pub name: &'a str,
@@ -102,7 +119,17 @@ pub(crate) fn init_body(t: &Tableau) -> String {
 /// for `tableau`. The caller injects the result where the old hand-written
 /// `solver_impl_struct` body went (Compact: into `model.c`; Library: into `solver.c`).
 pub(crate) fn emit(t: &Tableau, cx: &SolverCtx) -> R<String> {
-    debug_assert!(t.is_explicit(), "codegen solver: only explicit tableaus are emitted");
+    if t.is_implicit() && cx.numeric.frac().is_some() {
+        // The stage Newton needs division, `fabs` and a pivoted LU — none of
+        // which have an integer lowering.
+        return Err(super::CodegenError::Unsupported(format!(
+            "implicit tableau '{}' under fixed point (the stage solve needs              division and fabs); use an explicit fixed-step solver",
+            t.name
+        )));
+    }
+    // The stage kernel differs (Newton per stage vs a plain evaluation); the
+    // helpers it calls are file-static and emitted once, ahead of it.
+    let helpers = if t.is_implicit() { implicit_helpers(cx) } else { String::new() };
     if is_adaptive(t) {
         if cx.numeric.frac().is_some() {
             // The embedded-error controller needs pow/fabs on the error norm —
@@ -113,9 +140,9 @@ pub(crate) fn emit(t: &Tableau, cx: &SolverCtx) -> R<String> {
                 t.name
             )));
         }
-        Ok(emit_adaptive(t, cx))
+        Ok(helpers + &emit_adaptive(t, cx))
     } else {
-        Ok(emit_fixed(t, cx))
+        Ok(helpers + &emit_fixed(t, cx))
     }
 }
 
@@ -140,10 +167,151 @@ fn tableau_arrays(t: &Tableau, cx: &SolverCtx) -> String {
     )
 }
 
+/// File-static helpers the implicit stage kernel needs: a dense Jacobian and a
+/// dense LU solve. Emitted once, ahead of the stage kernel.
+///
+/// The Jacobian is a forward difference of `<name>_deriv`. An analytic
+/// `<name>_jvp` is emitted for most models and would give exact columns in one
+/// call each, but it is not available for every op, whereas differencing the
+/// derivative always is — and a Newton iteration converges on an approximate
+/// Jacobian regardless (it only slows convergence, it does not move the answer,
+/// which is pinned by the residual).
+fn implicit_helpers(cx: &SolverCtx) -> String {
+    let real = cx.real;
+    let n = cx.n_state;
+    let name = cx.name;
+    let fabs_xj = cx.mfn("fabs", "xs");
+    format!(
+        "/* Dense d(dx/dt)/dx at the current state, row-major. Forward differences. */\n\
+         static void fs_jacobian({name}_t * restrict m, {real} J[{n}][{n}]) {{\n\
+         \x20   {real} f0[{n}], f1[{n}];\n\
+         \x20   {name}_deriv(m, f0);\n\
+         \x20   for (size_t j = 0; j < {n}; j++) {{\n\
+         \x20       const {real} xs = m->x[j];\n\
+         \x20       const {real} a = {fabs_xj};\n\
+         \x20       const {real} h = {eps} * (a > {one} ? a : {one});\n\
+         \x20       m->x[j] = xs + h;\n\
+         \x20       {name}_deriv(m, f1);\n\
+         \x20       m->x[j] = xs;\n\
+         \x20       for (size_t i = 0; i < {n}; i++) J[i][j] = (f1[i] - f0[i]) / h;\n\
+         \x20   }}\n\
+         }}\n\n\
+         /* Solve A z = b in place (LU, partial pivoting). Returns 0 on success,\n\
+         \x20  1 if A is numerically singular — the caller then keeps its iterate. */\n\
+         static int fs_lu_solve({real} A[{n}][{n}], {real} b[{n}]) {{\n\
+         \x20   for (size_t c = 0; c < {n}; c++) {{\n\
+         \x20       size_t piv = c;\n\
+         \x20       {real} best = {fabs_ac};\n\
+         \x20       for (size_t r = c + 1; r < {n}; r++) {{\n\
+         \x20           const {real} v = {fabs_arc};\n\
+         \x20           if (v > best) {{ best = v; piv = r; }}\n\
+         \x20       }}\n\
+         \x20       if (best <= {tiny}) return 1;\n\
+         \x20       if (piv != c) {{\n\
+         \x20           for (size_t j = 0; j < {n}; j++) {{ {real} t = A[c][j]; A[c][j] = A[piv][j]; A[piv][j] = t; }}\n\
+         \x20           {real} t = b[c]; b[c] = b[piv]; b[piv] = t;\n\
+         \x20       }}\n\
+         \x20       for (size_t r = c + 1; r < {n}; r++) {{\n\
+         \x20           const {real} f = A[r][c] / A[c][c];\n\
+         \x20           if (f == {zero}) continue;\n\
+         \x20           for (size_t j = c; j < {n}; j++) A[r][j] -= f * A[c][j];\n\
+         \x20           b[r] -= f * b[c];\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         \x20   for (size_t ri = {n}; ri-- > 0; ) {{\n\
+         \x20       {real} acc = b[ri];\n\
+         \x20       for (size_t j = ri + 1; j < {n}; j++) acc -= A[ri][j] * b[j];\n\
+         \x20       b[ri] = acc / A[ri][ri];\n\
+         \x20   }}\n\
+         \x20   return 0;\n\
+         }}\n\n",
+        eps = cx.lit(1e-7),
+        one = cx.lit(1.0),
+        zero = cx.lit(0.0),
+        tiny = cx.lit(constants::TOLERANCE),
+        fabs_ac = cx.mfn("fabs", "A[c][c]"),
+        fabs_arc = cx.mfn("fabs", "A[r][c]"),
+    )
+}
+
+/// The implicit stage loop: same contract as [`stage_loop`] (fills `k[s][n]`,
+/// leaves the new state in `m->x` and `m->time` at `t0 + dt`), so the fixed and
+/// adaptive emitters drive it unchanged.
+///
+/// Each stage solves its own slope. For stage `i` with diagonal coefficient
+/// `a_ii`, the unknown `k_i` satisfies
+///
+/// ```text
+/// k_i = f(x0 + dt·Σ_{j<i} a_ij k_j + dt·a_ii·k_i,  t0 + c_i·dt)
+/// ```
+///
+/// which Newton solves as `R(k_i) = k_i − f(z) = 0` with `R' = I − dt·a_ii·J(z)`.
+/// A stage with `a_ii == 0` (an ESDIRK's explicit first stage) is a plain
+/// evaluation, no solve.
+fn stage_loop_implicit(t: &Tableau, cx: &SolverCtx) -> String {
+    let real = cx.real;
+    let n = cx.n_state;
+    let s = t.s;
+    let name = cx.name;
+    // Converge the stage well inside the local error the step controller will
+    // accept, so the Newton residual never becomes the limiting error term.
+    let newton_tol = (cx.tolerances.abs * 1e-3).max(1e-14);
+    format!(
+        "    {real} base[{n}], resid[{n}], zvec[{n}], fz[{n}];\n\
+         \x20   {real} jac[{n}][{n}], amat[{n}][{n}];\n\
+         \x20   for (size_t fs_s = 0; fs_s < {s}u; fs_s++) {{\n\
+         \x20       const {real} aii = fs_a[fs_s][fs_s];\n\
+         \x20       m->time = t0 + fs_c[fs_s] * dt;\n\
+         \x20       for (size_t i = 0; i < {n}; i++) {{\n\
+         \x20           {real} acc = {zero};\n\
+         \x20           for (size_t j = 0; j < fs_s; j++) acc += fs_a[fs_s][j] * k[j][i];\n\
+         \x20           base[i] = x0[i] + dt * acc;\n\
+         \x20       }}\n\
+         \x20       for (size_t i = 0; i < {n}; i++) m->x[i] = base[i];\n\
+         \x20       {name}_deriv(m, k[fs_s]);\n\
+         \x20       if (aii != {zero}) {{\n\
+         \x20           for (size_t it = 0; it < {maxit}u; it++) {{\n\
+         \x20               for (size_t i = 0; i < {n}; i++) zvec[i] = base[i] + dt * aii * k[fs_s][i];\n\
+         \x20               for (size_t i = 0; i < {n}; i++) m->x[i] = zvec[i];\n\
+         \x20               {name}_deriv(m, fz);\n\
+         \x20               {real} worst = {zero};\n\
+         \x20               for (size_t i = 0; i < {n}; i++) {{\n\
+         \x20                   resid[i] = k[fs_s][i] - fz[i];\n\
+         \x20                   const {real} av = {fabs_r};\n\
+         \x20                   if (av > worst) worst = av;\n\
+         \x20               }}\n\
+         \x20               if (worst <= {ntol}) break;\n\
+         \x20               fs_jacobian(m, jac);\n\
+         \x20               for (size_t i = 0; i < {n}; i++)\n\
+         \x20                   for (size_t j = 0; j < {n}; j++)\n\
+         \x20                       amat[i][j] = (i == j ? {one} : {zero}) - dt * aii * jac[i][j];\n\
+         \x20               for (size_t i = 0; i < {n}; i++) resid[i] = -resid[i];\n\
+         \x20               if (fs_lu_solve(amat, resid) != 0) break;\n\
+         \x20               for (size_t i = 0; i < {n}; i++) k[fs_s][i] += resid[i];\n\
+         \x20           }}\n\
+         \x20       }}\n\
+         \x20       for (size_t i = 0; i < {n}; i++) {{\n\
+         \x20           {real} acc = {zero};\n\
+         \x20           for (size_t j = 0; j <= fs_s; j++) acc += fs_a[fs_s][j] * k[j][i];\n\
+         \x20           m->x[i] = x0[i] + dt * acc;\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         \x20   m->time = t0 + dt;\n",
+        zero = cx.lit(0.0),
+        one = cx.lit(1.0),
+        maxit = 25,
+        ntol = cx.lit(newton_tol),
+        fabs_r = cx.mfn("fabs", "resid[i]"),
+    )
+}
+
 /// The stage loop body (shared by fixed and adaptive). Assumes locals `x0`, `k`,
 /// `t0` and the `fs_c`/`fs_a` arrays are already declared; leaves the new state in
 /// `m->x` and `m->time` at `t0 + dt`. `s` is the stage count, inlined as a literal.
 fn stage_loop(t: &Tableau, cx: &SolverCtx) -> String {
+    if t.is_implicit() {
+        return stage_loop_implicit(t, cx);
+    }
     let real = cx.real;
     let n = cx.n_state;
     let s = t.s;

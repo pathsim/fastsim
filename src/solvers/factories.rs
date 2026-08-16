@@ -342,6 +342,10 @@ pub fn esdirk54_factory(tol_abs: f64, tol_rel: f64) -> SolverFactory {
     build_from_tableau(&tbl::ESDIRK54, tol_abs, tol_rel)
 }
 
+pub fn esdirk85_factory(tol_abs: f64, tol_rel: f64) -> SolverFactory {
+    build_from_tableau(&tbl::ESDIRK85, tol_abs, tol_rel)
+}
+
 // ======================================================================================
 // Special solvers (custom solve_fn)
 // ======================================================================================
@@ -993,7 +997,6 @@ pub fn factory_from_name(name: &str, tol_abs: f64, tol_rel: f64) -> Option<Solve
 /// reporting a generic "unknown solver".
 const PATHSIM_UNIMPLEMENTED: &[&str] = &[
     "BDF", "BDF2", "BDF3", "BDF4", "BDF5", "BDF6", "GEAR", "GEAR21", "GEAR32", "GEAR43", "GEAR54",
-    "ESDIRK85",
 ];
 
 /// All solver names fastsim can construct (tableau-backed plus the specials).

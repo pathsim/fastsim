@@ -39,6 +39,25 @@ fn unsupported(s: impl Into<String>) -> CodegenError {
     CodegenError::Unsupported(s.into())
 }
 
+/// Refuse a model carrying simulation-level events.
+///
+/// `Module::events` records events registered on the `Simulation` rather than on
+/// a block. Only their kind and timing survive into the IR — the guard and the
+/// action are host closures with no static lowering — so generated C could only
+/// leave them out, and would then integrate a model that quietly differs from
+/// the one it came from (a bouncing ball that falls through the floor).
+/// `compile()` refuses these for the same reason; this keeps `to_c` / `to_fmu`
+/// consistent with it instead of emitting something subtly wrong.
+fn reject_global_events(module: &Module) -> R<()> {
+    if module.events.is_empty() {
+        return Ok(());
+    }
+    Err(unsupported(format!(
+        "model has {} simulation-level (global) event(s); their guards and actions are host closures, which have no static lowering. Attach the event to a block (block-internal events do lower) or remove it before generating code.",
+        module.events.len()
+    )))
+}
+
 /// One fully resolved wire: a leaf output element drives a leaf input element.
 /// Flattening reduces every connection — through any depth of subsystem — to a
 /// list of these, so wiring is a plain element-to-element map with no port or
@@ -801,6 +820,7 @@ const LICENSE_BANNER: &str = "\
 /// `<name>_blk_i_deriv` functions). Every extern symbol and include guard is
 /// prefixed with the model name; see `doc/codegen.md` for the emitted-API contract.
 pub fn generate(module: &Module, opts: &CodegenOptions) -> R<Vec<GeneratedFile>> {
+    reject_global_events(module)?;
     let file = |name: &str, contents: String| {
         // Always end with a newline: a generated file without a trailing newline
         // trips `-Wnewline-eof` for everyone who compiles the downloaded C.
@@ -1722,6 +1742,7 @@ fn build_layout(plan: &Plan, name: &str) -> ModelLayout {
 /// (the struct API needs continuous state). Lets a caller (e.g. the FMU exporter)
 /// map external identities onto the generated C without re-deriving the layout.
 pub fn struct_layout(module: &Module, _opts: &CodegenOptions) -> R<ModelLayout> {
+    reject_global_events(module)?;
     let plan = build_plan(flatten(module)?)?;
     if plan.n_state == 0 {
         return Err(unsupported("Struct API needs continuous state"));

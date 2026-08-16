@@ -146,7 +146,12 @@ pub fn delay(tau: f64, sampling_period: f64) -> BlockRef {
                 let u = blk.inputs._data[0];
                 let r = ring_samp.borrow_mut();
                 r.push_back(u);
-                while r.len() > n_samples { r.pop_front(); }
+                // Keep n_samples + 1 entries: the sample just taken plus the
+                // n_samples still in flight, so `front()` is the one taken
+                // n_samples periods ago — a delay of exactly
+                // n_samples * sampling_period == tau. Trimming to n_samples
+                // instead drops one period and delays by tau - sampling_period.
+                while r.len() > n_samples + 1 { r.pop_front(); }
             }
         }));
 
@@ -161,9 +166,13 @@ pub fn delay(tau: f64, sampling_period: f64) -> BlockRef {
 
         // IR (Memory + Event): a `ring` slot of n_samples; each sampling period
         // shifts (drop oldest, push u at the back). Output y = ring[0] (oldest).
+        // The emitted ring holds n_samples + 1 slots for the same reason the
+        // runtime one does: the newest sample plus the n_samples in flight, so
+        // the front is exactly n_samples periods old.
+        let ring_len = n_samples + 1;
         {
             let alg = {
-                let cell = RefCell::new(Graph::new(InputSignature::from_named_sizes([(format!("mem{}", 0u32), n_samples)])));
+                let cell = RefCell::new(Graph::new(InputSignature::from_named_sizes([(format!("mem{}", 0u32), ring_len)])));
                 let y = {
                     let gb = GraphBuilder::new(&cell);
                     gb.input(0) // ring front (oldest)
@@ -174,14 +183,14 @@ pub fn delay(tau: f64, sampling_period: f64) -> BlockRef {
             };
             let effect = {
                 let cell = RefCell::new(Graph::new(InputSignature::from_named_sizes([
-                    (format!("mem{}", 0u32), n_samples),
+                    (format!("mem{}", 0u32), ring_len),
                     ("u".to_string(), 1),
                 ])));
                 let outs = {
                     let gb = GraphBuilder::new(&cell);
-                    let ring: Vec<u32> = (0..n_samples as u32).map(|i| gb.input(i)).collect();
-                    let u = gb.input(n_samples as u32);
-                    let mut outs: Vec<u32> = ring[1..].to_vec(); // ring[1..n]
+                    let ring: Vec<u32> = (0..ring_len as u32).map(|i| gb.input(i)).collect();
+                    let u = gb.input(ring_len as u32);
+                    let mut outs: Vec<u32> = ring[1..].to_vec(); // drop the oldest
                     outs.push(u); // new back = u
                     outs
                 };
@@ -189,8 +198,8 @@ pub fn delay(tau: f64, sampling_period: f64) -> BlockRef {
                 g.outputs = outs;
                 g
             };
-            let targets: Vec<MemTarget> = (0..n_samples as u32).map(|i| MemTarget { slot: 0, offset: i }).collect();
-            let memory = vec![MemSpec { name: "ring".into(), init: vec![0.0; n_samples] }];
+            let targets: Vec<MemTarget> = (0..ring_len as u32).map(|i| MemTarget { slot: 0, offset: i }).collect();
+            let memory = vec![MemSpec { name: "ring".into(), init: vec![0.0; ring_len] }];
             let events = vec![EventSpec {
                 kind: EventKindSpec::SchedulePeriodic { period: sampling_period, phase: 0.0 },
                 effect,

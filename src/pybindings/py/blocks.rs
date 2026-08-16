@@ -849,10 +849,46 @@ block!(CounterUp => counter_up(start = 0.0, threshold = 0.0));
 block!(CounterDown => counter_down(start = 0.0, threshold = 0.0));
 
 #[pyfunction]
-#[pyo3(signature = (Kp=0.0, Ki=0.0, Kd=0.0, f_max=100.0, Ks=10.0, limits=(-10.0, 10.0)))]
+#[pyo3(signature = (Kp=0.0, Ki=0.0, Kd=0.0, f_max=100.0, Ks=10.0, limits=None))]
 #[allow(non_snake_case)]
-pub(super) fn AntiWindupPID(Kp: f64, Ki: f64, Kd: f64, f_max: f64, Ks: f64, limits: (f64, f64)) -> PyBlock {
-    PyBlock::wrap(constructors::anti_windup_pid(Kp, Ki, Kd, f_max, Ks, limits))
+pub(super) fn AntiWindupPID(
+    Kp: f64,
+    Ki: f64,
+    Kd: f64,
+    f_max: f64,
+    Ks: f64,
+    limits: Option<&Bound<'_, PyAny>>,
+) -> PyResult<PyBlock> {
+    // `limits` is a pair, but taking it as a Rust tuple made pyo3 reject a
+    // plain list — the very spelling this block's own docstring uses
+    // (`limits=[-5, 5]`), and the one pathsim accepts. Extract any two-element
+    // sequence instead.
+    let lim = match limits {
+        None => (-10.0, 10.0),
+        Some(obj) => {
+            // list/tuple directly; ndarray via tolist()
+            let v: Vec<f64> = obj
+                .extract::<Vec<f64>>()
+                .or_else(|_| {
+                    obj.call_method0("tolist").and_then(|l| l.extract::<Vec<f64>>())
+                })
+                .map_err(|_| {
+                    PyValueError::new_err(
+                        "AntiWindupPID: `limits` must be a sequence of two \
+                         numbers (lower, upper)",
+                    )
+                })?;
+            if v.len() != 2 {
+                return Err(PyValueError::new_err(format!(
+                    "AntiWindupPID: `limits` must hold exactly two values \
+                     (lower, upper), got {}",
+                    v.len()
+                )));
+            }
+            (v[0], v[1])
+        }
+    };
+    Ok(PyBlock::wrap(constructors::anti_windup_pid(Kp, Ki, Kd, f_max, Ks, lim)))
 }
 
 block!(RateLimiter => rate_limiter(rate = 1.0, f_max = 100.0));

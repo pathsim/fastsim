@@ -12,4 +12,14 @@ from fastsim.adapter import adapt
 from fastsim.port import port
 from fastsim.random import random_uniform, random_normal
 
-__version__ = "0.25.0"
+# Submodules, imported so they are attributes of the package rather than only
+# importable by name. pathsim exposes `pathsim.solvers` / `pathsim.events` /
+# `pathsim.blocks` after a bare `import pathsim`, and code written against it
+# reaches them that way — `Solver=engine.solvers.RK4` in a factory that takes
+# the engine module is the idiom this exists for. Without these, such a script
+# ran under pathsim and raised `AttributeError` under fastsim.
+from fastsim import blocks, events, solvers  # noqa: F401,E402
+# fastsim-only: the standalone tracer/JIT and the IR types.
+from fastsim import ir, jit  # noqa: F401,E402
+
+__version__ = "0.26.0"

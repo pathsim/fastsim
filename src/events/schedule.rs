@@ -2,6 +2,7 @@
 // Ported 1:1 from pathsim/events/schedule.py
 
 use crate::constants::TOLERANCE;
+use crate::events::active::{active_flag, ActiveFlag};
 
 /// Shared `detect` tail for time-scheduled events: given the next scheduled time
 /// `t_next`, the current time `t`, the buffered previous time `history_t`, and
@@ -13,9 +14,12 @@ fn detect_at(t_next: f64, t: f64, history_t: f64, tolerance: f64) -> (bool, bool
     if t_next > t {
         return (false, false, 1.0);
     }
-    // Close enough to the sample.
+    // Close enough to the sample. `t` is the END of the step and the caller
+    // resolves at `step_start + ratio * dt`, so an event sitting on `t` is at
+    // ratio 1 — ratio 0 would place it a full `dt` early. `ZeroCrossing` uses
+    // the same convention for its exact hit. Upstream: pathsim#248.
     if (t_next - t).abs() <= tolerance {
-        return (true, true, 0.0);
+        return (true, true, 1.0);
     }
     // Already passed (buffered time is at/after the next sample).
     if history_t >= t_next {
@@ -34,7 +38,7 @@ pub struct Schedule {
     pub t_end: Option<f64>,
     pub _history: (Option<f64>, f64),
     pub _times: Vec<f64>,
-    pub _active: bool,
+    pub _active: ActiveFlag,
 }
 
 impl Schedule {
@@ -47,7 +51,7 @@ impl Schedule {
     ) -> Self {
         Self {
             func_act, tolerance, t_start, t_period, t_end,
-            _history: (None, 0.0), _times: Vec::new(), _active: true,
+            _history: (None, 0.0), _times: Vec::new(), _active: active_flag(),
         }
     }
 
@@ -57,14 +61,17 @@ impl Schedule {
 
     pub fn len(&self) -> usize { self._times.len() }
     pub fn is_empty(&self) -> bool { self._times.is_empty() }
-    pub fn is_active(&self) -> bool { self._active }
-    pub fn on(&mut self) { self._active = true; }
-    pub fn off(&mut self) { self._active = false; }
+    pub fn is_active(&self) -> bool { self._active.get() }
+    pub fn on(&self) { self._active.set(true); }
+    pub fn off(&self) { self._active.set(false); }
+    /// Handle on the activation flag, for callers that must toggle it without
+    /// borrowing the event (see `events::active`).
+    pub fn active_flag(&self) -> ActiveFlag { self._active.clone() }
 
     pub fn reset(&mut self) {
         self._history = (None, 0.0);
         self._times.clear();
-        self._active = true;
+        self._active.set(true);
     }
 
     /// Next scheduled event time.
@@ -109,7 +116,7 @@ pub struct ScheduleList {
     pub times_evt: Vec<f64>,
     pub _history: (Option<f64>, f64),
     pub _times: Vec<f64>,
-    pub _active: bool,
+    pub _active: ActiveFlag,
 }
 
 impl ScheduleList {
@@ -123,7 +130,7 @@ impl ScheduleList {
         times_evt.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         Self {
             func_act, tolerance, times_evt,
-            _history: (None, 0.0), _times: Vec::new(), _active: true,
+            _history: (None, 0.0), _times: Vec::new(), _active: active_flag(),
         }
     }
 
@@ -133,14 +140,17 @@ impl ScheduleList {
 
     pub fn len(&self) -> usize { self._times.len() }
     pub fn is_empty(&self) -> bool { self._times.is_empty() }
-    pub fn is_active(&self) -> bool { self._active }
-    pub fn on(&mut self) { self._active = true; }
-    pub fn off(&mut self) { self._active = false; }
+    pub fn is_active(&self) -> bool { self._active.get() }
+    pub fn on(&self) { self._active.set(true); }
+    pub fn off(&self) { self._active.set(false); }
+    /// Handle on the activation flag, for callers that must toggle it without
+    /// borrowing the event (see `events::active`).
+    pub fn active_flag(&self) -> ActiveFlag { self._active.clone() }
 
     pub fn reset(&mut self) {
         self._history = (None, 0.0);
         self._times.clear();
-        self._active = true;
+        self._active.set(true);
     }
 
     pub fn _next(&self) -> f64 {
@@ -220,6 +230,39 @@ mod tests {
         let (d, c, r) = s.detect(4.0);
         assert!(d); assert!(!c);
         assert_eq!(r, 0.5);
+    }
+
+    /// An event landing exactly on `t` is at the end of the step, not its start.
+    #[test]
+    fn test_schedule_detect_exact_hit_is_end_of_step() {
+        let mut s = Schedule::periodic(2.0, 20.0);
+        s.buffer(1.0);
+
+        let (d, c, r) = s.detect(2.0);
+        assert!(d); assert!(c);
+        assert_eq!(r, 1.0);
+    }
+
+    #[test]
+    fn test_schedule_list_detect_exact_hit_is_end_of_step() {
+        let mut s = ScheduleList::from_times(vec![1.0, 3.0, 5.0, 7.0]);
+        s.buffer(0.5);
+
+        let (d, c, r) = s.detect(1.0);
+        assert!(d); assert!(c);
+        assert_eq!(r, 1.0);
+    }
+
+    /// The other close branch: the event was already passed before this step,
+    /// so it belongs at the step start and keeps ratio 0.
+    #[test]
+    fn test_schedule_detect_already_passed_is_start_of_step() {
+        let mut s = Schedule::periodic(2.0, 20.0);
+        s.buffer(3.0);
+
+        let (d, c, r) = s.detect(4.0);
+        assert!(d); assert!(c);
+        assert_eq!(r, 0.0);
     }
 
     #[test]

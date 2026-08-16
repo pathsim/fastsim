@@ -1,5 +1,6 @@
 // SimEvent trait implementations for all concrete event types
 
+use crate::events::active::ActiveFlag;
 use crate::events::eventtype::{CrossDir, EventDescriptor, SimEvent};
 use crate::events::event::Event;
 use crate::events::zerocrossing::{CrossingDirection, ZeroCrossing};
@@ -9,9 +10,12 @@ use crate::events::condition::Condition;
 // -- Event (base) --
 
 impl SimEvent for Event {
-    fn is_active(&self) -> bool { self._active }
-    fn on(&mut self) { self._active = true; }
-    fn off(&mut self) { self._active = false; }
+    fn is_active(&self) -> bool { self._active.get() }
+    fn on(&self) { self._active.set(true); }
+    fn off(&self) { self._active.set(false); }
+    fn active_flag(&self) -> ActiveFlag { self._active.clone() }
+    fn tolerance(&self) -> f64 { self.tolerance }
+    fn set_tolerance(&mut self, tolerance: f64) { self.tolerance = tolerance; }
     fn reset(&mut self) { Event::reset(self); }
     fn buffer(&mut self, t: f64) { Event::buffer(self, t); }
     fn estimate(&self, _t: f64) -> Option<f64> { None }
@@ -26,9 +30,12 @@ impl SimEvent for Event {
 // -- ZeroCrossing (unified: Both/Up/Down via direction field) --
 
 impl SimEvent for ZeroCrossing {
-    fn is_active(&self) -> bool { self._active }
-    fn on(&mut self) { self._active = true; }
-    fn off(&mut self) { self._active = false; }
+    fn is_active(&self) -> bool { self._active.get() }
+    fn on(&self) { self._active.set(true); }
+    fn off(&self) { self._active.set(false); }
+    fn active_flag(&self) -> ActiveFlag { self._active.clone() }
+    fn tolerance(&self) -> f64 { self.tolerance }
+    fn set_tolerance(&mut self, tolerance: f64) { self.tolerance = tolerance; }
     fn reset(&mut self) { ZeroCrossing::reset(self); }
     fn buffer(&mut self, t: f64) { ZeroCrossing::buffer(self, t); }
     fn estimate(&self, _t: f64) -> Option<f64> { None }
@@ -49,9 +56,12 @@ impl SimEvent for ZeroCrossing {
 // -- Schedule --
 
 impl SimEvent for Schedule {
-    fn is_active(&self) -> bool { self._active }
-    fn on(&mut self) { self._active = true; }
-    fn off(&mut self) { self._active = false; }
+    fn is_active(&self) -> bool { self._active.get() }
+    fn on(&self) { self._active.set(true); }
+    fn off(&self) { self._active.set(false); }
+    fn active_flag(&self) -> ActiveFlag { self._active.clone() }
+    fn tolerance(&self) -> f64 { self.tolerance }
+    fn set_tolerance(&mut self, tolerance: f64) { self.tolerance = tolerance; }
     fn reset(&mut self) { Schedule::reset(self); }
     fn buffer(&mut self, t: f64) { Schedule::buffer(self, t); }
     fn estimate(&self, t: f64) -> Option<f64> { Some(Schedule::estimate(self, t)) }
@@ -65,9 +75,12 @@ impl SimEvent for Schedule {
 }
 
 impl SimEvent for ScheduleList {
-    fn is_active(&self) -> bool { self._active }
-    fn on(&mut self) { self._active = true; }
-    fn off(&mut self) { self._active = false; }
+    fn is_active(&self) -> bool { self._active.get() }
+    fn on(&self) { self._active.set(true); }
+    fn off(&self) { self._active.set(false); }
+    fn active_flag(&self) -> ActiveFlag { self._active.clone() }
+    fn tolerance(&self) -> f64 { self.tolerance }
+    fn set_tolerance(&mut self, tolerance: f64) { self.tolerance = tolerance; }
     fn reset(&mut self) { ScheduleList::reset(self); }
     fn buffer(&mut self, t: f64) { ScheduleList::buffer(self, t); }
     fn estimate(&self, t: f64) -> Option<f64> { Some(ScheduleList::estimate(self, t)) }
@@ -83,9 +96,12 @@ impl SimEvent for ScheduleList {
 // -- Condition --
 
 impl SimEvent for Condition {
-    fn is_active(&self) -> bool { self._active }
-    fn on(&mut self) { self._active = true; }
-    fn off(&mut self) { self._active = false; }
+    fn is_active(&self) -> bool { self._active.get() }
+    fn on(&self) { self._active.set(true); }
+    fn off(&self) { self._active.set(false); }
+    fn active_flag(&self) -> ActiveFlag { self._active.clone() }
+    fn tolerance(&self) -> f64 { self.tolerance }
+    fn set_tolerance(&mut self, tolerance: f64) { self.tolerance = tolerance; }
     fn reset(&mut self) { Condition::reset(self); }
     fn buffer(&mut self, t: f64) { Condition::buffer(self, t); }
     fn estimate(&self, _t: f64) -> Option<f64> { None }

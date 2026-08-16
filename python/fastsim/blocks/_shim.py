@@ -146,6 +146,14 @@ class Parameter:
         return f"Parameter({type(self.block).__name__}.{self.name}={self.value!r})"
 
 
+# Position of each matrix in `Block.state_space()`. A block built from a
+# state-space realization exposes them as attributes, which is how pathsim's
+# filters read — there they subclass `StateSpace` outright. Only consulted when
+# the name is not a constructor parameter, so `StateSpace.A` still reports what
+# the caller passed in.
+_LTI_MATRICES = {"A": 0, "B": 1, "C": 2, "D": 3}
+
+
 class _ShimBlock(Block):
     """Base for factory-backed blocks. Concrete subclasses set ``_factory_name``,
     ``_param_defaults`` and the port-label class attributes, and provide an
@@ -203,6 +211,11 @@ class _ShimBlock(Block):
         if params is not None and attr in params:
             v = params[attr]
             return None if v is Ellipsis else v
+        if attr in _LTI_MATRICES:
+            matrices = self.state_space()
+            if matrices is not None:
+                import numpy as np
+                return np.asarray(matrices[_LTI_MATRICES[attr]], dtype=float)
         raise AttributeError(f"'{type(self).__name__}' has no attribute '{attr}'")
 
     def set(self, **kwargs):
@@ -248,6 +261,13 @@ class _JitShimBlock(Block):
 
     def _jit_init(self, params):
         """Store parameters, then build via the JIT path with a factory fallback."""
+        # A subclass may supply the wrapped callable as a METHOD rather than a
+        # constructor argument. That is pathsim's documented second way to use
+        # `Wrapper` — its `__init__` assigns `self.func` only when the argument
+        # is callable, so a subclass's own `func` survives — and pathsim's
+        # `example_pid_vs_discretePID.py` builds its DiscretePID that way.
+        if params.get('func') is None and callable(getattr(type(self), 'func', None)):
+            params['func'] = getattr(self, 'func')
         if self._adapt_func and params.get('func') is not None:
             params['func'] = _adapt_function_arity(params['func'])
         self.__dict__['_init_params'] = params

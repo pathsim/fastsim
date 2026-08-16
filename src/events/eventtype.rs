@@ -1,6 +1,8 @@
 // SimEvent trait: polymorphic interface for all event types
 // Mirrors Python's Event class with virtual methods (detect, resolve, buffer, etc.)
 
+use crate::events::active::ActiveFlag;
+
 /// Zero-crossing direction, mirrored neutrally for IR export so this module
 /// stays independent of `events::zerocrossing`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,8 +30,15 @@ pub enum EventDescriptor {
 /// Trait that all simulation events must implement.
 pub trait SimEvent {
     fn is_active(&self) -> bool;
-    fn on(&mut self);
-    fn off(&mut self);
+    /// Activation is toggled through a shared flag, so `on`/`off` take `&self`
+    /// and stay callable from inside an action function that is resolving this
+    /// very event (see `events::active`).
+    fn on(&self);
+    fn off(&self);
+    /// Handle on that shared flag.
+    fn active_flag(&self) -> ActiveFlag;
+    fn tolerance(&self) -> f64;
+    fn set_tolerance(&mut self, tolerance: f64);
     fn reset(&mut self);
     fn buffer(&mut self, t: f64);
     fn estimate(&self, t: f64) -> Option<f64>;

@@ -187,6 +187,21 @@ pub fn statespace(
     let dyn_graph = statespace_region_graph(&a, ns, &b_mat, ni, ns, ns, ni);
     blk.set_dynamic("StateSpace", alg_graph, dyn_graph);
 
+    // Keep the realization readable. Every LTI block reaches the engine through
+    // here — transfer functions, PT1/PT2, the Butterworth and allpass filters —
+    // and past this point A/B/C/D live only inside closures and op-graphs. In
+    // pathsim the filters subclass `StateSpace` and so expose their matrices;
+    // its `example_spectrum.py` builds the ideal response from them.
+    for (key, flat, rows, cols) in [
+        ("A", &a, ns, ns), ("B", &b_mat, ns, ni),
+        ("C", &c, no, ns), ("D", &d, no, ni),
+    ] {
+        blk.data_vec2.insert(
+            key.to_string(),
+            flat.chunks(cols.max(1)).take(rows).map(|r| r.to_vec()).collect(),
+        );
+    }
+
     Rc::new(FastCell::new(blk))
 }
 

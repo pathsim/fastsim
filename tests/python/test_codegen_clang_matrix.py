@@ -27,7 +27,6 @@ contract are pure-Python and always run; compilation is the local deep check.
 Run: ``python -m pytest tests/python/test_codegen_clang_matrix.py -v``
 """
 import os
-import shutil
 import subprocess
 
 import numpy as np
@@ -35,35 +34,13 @@ import pytest
 
 from codegen_common import (
     COMBOS, KEYS, PROVIDED_IMPORTS, SOLVER_CLS, SYSTEMS, TRAJ_COMBOS, TRAJ_DOUBLE_ONLY,
-    combo_id, external_calls, gen_main_c_print, match_worst, reference, state_count,
+    CC, combo_id, external_calls, gen_main_c_print, match_worst, reference,
+    state_count,
 )
 
-# Compiler resolution: `$FASTSIM_CC` (an explicit path — the machine's PATH `gcc`
-# may be an ancient MSYS2 build that ICEs on doubles) wins, then a PATH gcc/cc.
-# No hardcoded machine-specific path. Set `$FASTSIM_REQUIRE_CC=1` on a machine
-# meant to verify (CI / release gate) so a missing compiler FAILS instead of the
-# whole compile-and-run layer silently skipping.
-def _resolve_cc():
-    """Resolve the compiler spec. May be multi-word ("zig cc") — whitespace-
-    split, first token is the program (same semantics as the Rust side's
-    `codegen::verify::cc_command`)."""
-    env_cc = os.environ.get("FASTSIM_CC")
-    if env_cc:
-        prog = env_cc.split()[0]
-        if os.path.exists(prog) or shutil.which(prog):
-            return env_cc
-        return None
-    return shutil.which("gcc") or shutil.which("cc")
-
-
-_CC = _resolve_cc()
-_REQUIRE_CC = bool(os.environ.get("FASTSIM_REQUIRE_CC"))
-
-if _REQUIRE_CC and not _CC:
-    raise RuntimeError(
-        "FASTSIM_REQUIRE_CC is set but no working C compiler was found; "
-        "point $FASTSIM_CC at a C99 compiler with libm."
-    )
+# Compiler resolution lives in `codegen_common` — `$FASTSIM_CC`, `$CC`, then
+# every `cc`/`clang`/`gcc` on PATH, each screened by a double + libm probe.
+_CC = CC
 
 
 def _cc_env(work_dir=None):

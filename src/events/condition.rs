@@ -2,6 +2,7 @@
 // Ported 1:1 from pathsim/events/condition.py
 
 use crate::constants::EVT_TOLERANCE;
+use crate::events::active::{active_flag, ActiveFlag};
 
 /// Condition event: triggers when event function evaluates to true.
 ///
@@ -13,7 +14,7 @@ pub struct Condition {
     pub tolerance: f64,
     pub _history: (Option<bool>, f64),
     pub _times: Vec<f64>,
-    pub _active: bool,
+    pub _active: ActiveFlag,
 }
 
 impl Condition {
@@ -25,7 +26,7 @@ impl Condition {
         Self {
             func_evt: Box::new(func_evt),
             func_act, tolerance,
-            _history: (None, 0.0), _times: Vec::new(), _active: true,
+            _history: (None, 0.0), _times: Vec::new(), _active: active_flag(),
         }
     }
 
@@ -35,14 +36,17 @@ impl Condition {
 
     pub fn len(&self) -> usize { self._times.len() }
     pub fn is_empty(&self) -> bool { self._times.is_empty() }
-    pub fn is_active(&self) -> bool { self._active }
-    pub fn on(&mut self) { self._active = true; }
-    pub fn off(&mut self) { self._active = false; }
+    pub fn is_active(&self) -> bool { self._active.get() }
+    pub fn on(&self) { self._active.set(true); }
+    pub fn off(&self) { self._active.set(false); }
+    /// Handle on the activation flag, for callers that must toggle it without
+    /// borrowing the event (see `events::active`).
+    pub fn active_flag(&self) -> ActiveFlag { self._active.clone() }
 
     pub fn reset(&mut self) {
         self._history = (None, 0.0);
         self._times.clear();
-        self._active = true;
+        self._active.set(true);
     }
 
     pub fn buffer(&mut self, t: f64) {
@@ -110,9 +114,9 @@ mod tests {
     #[test]
     fn test_condition_resolve_deactivates() {
         let mut e = Condition::from_evt(|t| t > 5.0);
-        assert!(e._active);
+        assert!(e.is_active());
         e.resolve(5.5);
-        assert!(!e._active);
+        assert!(!e.is_active());
         assert_eq!(e._times.len(), 1);
         assert_eq!(e._times[0], 5.5);
     }
@@ -128,9 +132,9 @@ mod tests {
             Some(Box::new(move |t| { called_clone.borrow_mut().push(t); })),
             EVT_TOLERANCE,
         );
-        assert!(e._active);
+        assert!(e.is_active());
         e.resolve(5.5);
-        assert!(!e._active);
+        assert!(!e.is_active());
         assert_eq!(called.borrow().len(), 1);
         assert_eq!(called.borrow()[0], 5.5);
     }

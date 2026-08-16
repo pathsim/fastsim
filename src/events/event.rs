@@ -2,6 +2,7 @@
 // Ported 1:1 from pathsim/events/_event.py
 
 use crate::constants::EVT_TOLERANCE;
+use crate::events::active::{active_flag, ActiveFlag};
 
 /// Base class of the event handling system.
 ///
@@ -27,7 +28,7 @@ pub struct Event {
     /// Recorded event times
     pub _times: Vec<f64>,
     /// Active flag
-    pub _active: bool,
+    pub _active: ActiveFlag,
 }
 
 impl Event {
@@ -40,7 +41,7 @@ impl Event {
             func_evt, func_act, tolerance,
             _history: (None, 0.0),
             _times: Vec::new(),
-            _active: true,
+            _active: active_flag(),
         }
     }
 
@@ -50,14 +51,17 @@ impl Event {
 
     pub fn len(&self) -> usize { self._times.len() }
     pub fn is_empty(&self) -> bool { self._times.is_empty() }
-    pub fn is_active(&self) -> bool { self._active }
-    pub fn on(&mut self) { self._active = true; }
-    pub fn off(&mut self) { self._active = false; }
+    pub fn is_active(&self) -> bool { self._active.get() }
+    pub fn on(&self) { self._active.set(true); }
+    pub fn off(&self) { self._active.set(false); }
+    /// Handle on the activation flag, for callers that must toggle it without
+    /// borrowing the event (see `events::active`).
+    pub fn active_flag(&self) -> ActiveFlag { self._active.clone() }
 
     pub fn reset(&mut self) {
         self._history = (None, 0.0);
         self._times.clear();
-        self._active = true;
+        self._active.set(true);
     }
 
     /// Buffer event function evaluation before timestep.
@@ -104,7 +108,7 @@ mod tests {
         assert!(e.func_act.is_none());
         assert_eq!(e.tolerance, EVT_TOLERANCE);
         assert_eq!(e._history, (None, 0.0));
-        assert!(e._active);
+        assert!(e.is_active());
     }
 
     #[test]
@@ -122,11 +126,11 @@ mod tests {
     #[test]
     fn test_event_on_off() {
         let mut e = Event::with_defaults();
-        assert!(e._active);
+        assert!(e.is_active());
         e.off();
-        assert!(!e._active);
+        assert!(!e.is_active());
         e.on();
-        assert!(e._active);
+        assert!(e.is_active());
     }
 
     #[test]
@@ -168,10 +172,10 @@ mod tests {
     fn test_event_reset() {
         let mut e = Event::with_defaults();
         e._times = vec![1.0, 2.0];
-        e._active = false;
+        e.off();
         e.reset();
         assert!(e._times.is_empty());
-        assert!(e._active);
+        assert!(e.is_active());
         assert_eq!(e._history, (None, 0.0));
     }
 }

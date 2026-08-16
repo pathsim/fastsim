@@ -26,8 +26,38 @@ class AlgebraicConstraint(Block):
     # Detailed docstring + info() attached from the central registry by
     # _finalize_block_class(AlgebraicConstraint) in blocks/__init__.py.
 
-    def __init__(self, residual, x0):
+    # Accepted for pathsim source compatibility, but not parameters of the
+    # block — kept out of `info()` so UIs do not show duplicate fields.
+    _compat_aliases = ("func", "jac")
+
+    def __init__(self, residual=None, x0=0.0, func=None, jac=None):
+        """
+        Parameters
+        ----------
+        residual : callable
+            the constraint ``F(x, u)`` to drive to zero. Also accepted under
+            pathsim's name ``func``, so pathsim source runs unchanged.
+        x0 : array_like
+            initial guess for the Newton solve.
+        func : callable, optional
+            alias for ``residual`` (pathsim compatibility).
+        jac : callable, optional
+            accepted for pathsim compatibility and ignored: the Jacobian
+            ``dF/dx`` is derived exactly by AD from the traced residual, which
+            is what the warmstarted Newton solve uses.
+        """
         super().__init__()
+        if residual is None and func is None:
+            raise TypeError(
+                "AlgebraicConstraint: pass the constraint as `residual` "
+                "(or pathsim's `func`)."
+            )
+        if residual is not None and func is not None:
+            raise TypeError(
+                "AlgebraicConstraint: `residual` and `func` are the same "
+                "argument — pass only one."
+            )
+        residual = residual if residual is not None else func
         x0v = np.asarray(x0, dtype=float).reshape(-1)
         blk = _trace_algebraic_constraint(residual, x0v)
         if blk is None:

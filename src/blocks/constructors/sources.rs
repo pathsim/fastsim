@@ -12,7 +12,6 @@ use crate::error::SimError;
 use crate::blocks::blockops::{
     mem_read_alg_graph, EventKindSpec, EventSpec, MemSpec, MemTarget,
 };
-use crate::constants::SOURCE_RISE_FALL_TIME_MIN;
 use crate::ssa::build::{Builder, F64Builder, GraphBuilder};
 use crate::ssa::graph::{Graph, InputSignature};
 use crate::utils::fastcell::FastCell;
@@ -270,8 +269,14 @@ pub fn square_wave_source(amplitude: f64, frequency: f64, phase: f64) -> BlockRe
 pub fn pulse_source(amplitude: f64, t_period: f64, t_rise: f64, t_fall: f64, tau: f64, duty: f64) -> BlockRef {
     // Trapezoidal pulse with rise/fall times, duty cycle, and phase offset
     // 4 Schedule events: rising, high, falling, low — mirrors pathsim PulseSource
-    let t_rise = t_rise.max(SOURCE_RISE_FALL_TIME_MIN);
-    let t_fall = t_fall.max(SOURCE_RISE_FALL_TIME_MIN);
+    //
+    // The `dt / t_rise` singularity at t_rise == 0 is handled in `update_fn`
+    // (an instantaneous edge), NOT by clamping the time constants: the phase
+    // start times are built from them, so clamping shifted the whole edge past
+    // its exact instant. With a 1e-12 floor a pulse of T=1, duty=0.5 fell at
+    // 0.5 + 1e-12 and still read `amplitude` AT t = 0.5, and the ratio
+    // dt / 1e-12 landed mid-ramp on the rounding residue at a period boundary,
+    // emitting a value that is neither 0 nor `amplitude`.
     let t_plateau = t_period * duty;
 
     let phase_state: Rc<FastCell<&'static str>> = Rc::new(FastCell::new("low"));
@@ -291,10 +296,16 @@ pub fn pulse_source(amplitude: f64, t_period: f64, t_rise: f64, t_fall: f64, tau
     // update: interpolate value based on current phase
     b.update_fn = Some(Box::new(move |blk, t| {
         let dt = t - *pst_upd.borrow();
+        // A zero-length edge is instantaneous: the phase is already fully
+        // reached the moment it starts.
         let val = match *ps_upd.borrow() {
-            "rising" => amplitude * (dt / t_rise).min(1.0),
+            "rising" if t_rise > 0.0 => amplitude * (dt / t_rise).clamp(0.0, 1.0),
+            "rising" => amplitude,
             "high" => amplitude,
-            "falling" => amplitude * (1.0 - (dt / t_fall).min(1.0)),
+            "falling" if t_fall > 0.0 => {
+                amplitude * (1.0 - (dt / t_fall).clamp(0.0, 1.0))
+            }
+            "falling" => 0.0,
             _ => 0.0,
         };
         blk.outputs._data[0] = val;

@@ -11,6 +11,7 @@
 # Spectrum, BVP1D and AlgebraicConstraint are hand-written below.
 
 import inspect
+import warnings
 from functools import lru_cache
 
 from fastsim._fastsim import Block
@@ -69,6 +70,12 @@ def _finalize_block_class(cls):
             _params = _params_from_signature(inspect.signature(cls.__init__))
         except (ValueError, TypeError):
             _params = {}
+        # Drop pathsim-compatibility aliases: they are accepted by the
+        # constructor so pathsim source runs unchanged, but they are not
+        # parameters of the block. `info()` drives UIs and introspection, where
+        # an alias would show up as a second, duplicate field.
+        for _alias in getattr(cls, "_compat_aliases", ()):
+            _params.pop(_alias, None)
         cls.info = classmethod(
             lru_cache(maxsize=None)(lambda c, _p=_params: _build_info(c, _p))
         )
@@ -84,6 +91,35 @@ _Spectrum_factory = getattr(_fastsim, "Spectrum")
 
 # Color palette matching pathsim
 _COLORS = ['#e41a1c', '#377eb8', '#4daf4a', '#984ea3', '#ff7f00']
+
+
+def _pickable_legend(fig, ax):
+    """Clicking a legend entry toggles its trace, as in pathsim."""
+    lines = ax.get_lines()
+    leg = ax.get_legend()
+    if leg is None:
+        return
+    lined = {}
+    for legline, origline in zip(leg.get_lines(), lines):
+        legline.set_picker(5)
+        lined[legline] = origline
+
+    def on_pick(event):
+        origline = lined[event.artist]
+        visible = not origline.get_visible()
+        origline.set_visible(visible)
+        event.artist.set_alpha(1.0 if visible else 0.2)
+        fig.canvas.draw()
+
+    fig.canvas.mpl_connect("pick_event", on_pick)
+
+
+def _new_axes(figsize):
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize,
+                           tight_layout=True, dpi=120)
+    ax.set_prop_cycle(color=_COLORS)
+    return fig, ax
 
 
 class Scope(Block):
@@ -103,44 +139,101 @@ class Scope(Block):
             kwargs['sampling_period'] = sampling_period
         self._init_from(_Scope_factory(**kwargs))
 
+    def read(self, *args, **kwargs):
+        """Recorded times and per-port data.
+
+        Returns ``(time, data)`` with `data` an array of shape
+        ``(n_ports, n_samples)``, and ``(None, None)`` when nothing was
+        recorded — both as in pathsim, whose examples do array arithmetic on
+        the result (``data_moon - data_earth``) and test the empty case with
+        ``if time is None``.
+        """
+        import numpy as np
+
+        time, data = super().read(*args, **kwargs)
+        if time is None or len(time) == 0:
+            return None, None
+        return np.asarray(time), np.asarray(data)
+
+    def _label(self, port):
+        labels = self.__dict__.get('_labels', [])
+        return labels[port] if port < len(labels) else f"port {port}"
+
     def plot(self, *args, **kwargs):
-        """Plot recorded data with interactive legend picking."""
+        """Plot every recorded port against time."""
         import matplotlib.pyplot as plt
 
         time, data = self.read()
         if time is None:
+            warnings.warn("no recording available for plotting in 'Scope.plot'")
             return None, None
 
-        fig, ax = plt.subplots(figsize=(8, 4), tight_layout=True, dpi=120)
-        ax.set_prop_cycle(color=_COLORS)
-
-        labels = self.__dict__.get('_labels', [])
+        fig, ax = _new_axes((8, 4))
         for p, d in enumerate(data):
-            lb = labels[p] if p < len(labels) else f"port {p}"
-            ax.plot(time, d, *args, **kwargs, label=lb)
+            ax.plot(time, d, *args, **kwargs, label=self._label(p))
 
         ax.legend(fancybox=False)
         ax.set_xlabel("time [s]")
         ax.grid()
 
-        # Legend picking
-        lines = ax.get_lines()
-        leg = ax.get_legend()
-        lined = {}
-        for legline, origline in zip(leg.get_lines(), lines):
-            legline.set_picker(5)
-            lined[legline] = origline
-
-        def on_pick(event):
-            legline = event.artist
-            origline = lined[legline]
-            visible = not origline.get_visible()
-            origline.set_visible(visible)
-            legline.set_alpha(1.0 if visible else 0.2)
-            fig.canvas.draw()
-
-        fig.canvas.mpl_connect("pick_event", on_pick)
+        _pickable_legend(fig, ax)
         plt.show(block=False)
+        self.__dict__['fig'], self.__dict__['ax'] = fig, ax
+        return fig, ax
+
+    def plot2D(self, *args, axes=(0, 1), **kwargs):
+        """Plot one recorded port against another (a phase portrait)."""
+        import matplotlib.pyplot as plt
+
+        time, data = self.read()
+        if time is None:
+            warnings.warn("no recording available for plotting in 'Scope.plot2D'")
+            return None, None
+        if len(data) < 2 or len(axes) != 2:
+            warnings.warn("not enough channels for plotting in 'Scope.plot2D'")
+            return None, None
+        if not all(0 <= i < data.shape[0] for i in axes):
+            warnings.warn(f"selected axes {axes} out of bounds for data shape {data.shape}")
+            return None, None
+
+        i, j = axes
+        fig, ax = _new_axes((4, 4))
+        ax.plot(data[i], data[j], *args, **kwargs)
+        ax.set_xlabel(self._label(i))
+        ax.set_ylabel(self._label(j))
+        ax.grid()
+
+        plt.show(block=False)
+        self.__dict__['fig'], self.__dict__['ax'] = fig, ax
+        return fig, ax
+
+    def plot3D(self, *args, axes=(0, 1, 2), **kwargs):
+        """Plot three recorded ports against each other."""
+        import matplotlib.pyplot as plt
+
+        time, data = self.read()
+        if time is None:
+            warnings.warn("no recording available for plotting in 'Scope.plot3D'")
+            return None, None
+        if len(data) < 3 or len(axes) != 3:
+            warnings.warn("not enough channels for plotting in 'Scope.plot3D'")
+            return None, None
+        if not all(0 <= i < data.shape[0] for i in axes):
+            warnings.warn(f"selected axes {axes} out of bounds for data shape {data.shape}")
+            return None, None
+
+        i, j, k = axes
+        fig = plt.figure(figsize=(4, 4), tight_layout=True, dpi=120)
+        ax = fig.add_subplot(projection="3d")
+        ax.set_prop_cycle(color=_COLORS)
+        ax.plot(data[i], data[j], data[k], *args, **kwargs)
+        ax.set_xlabel(self._label(i))
+        ax.set_ylabel(self._label(j))
+        ax.set_zlabel(self._label(k))
+        ax.grid()
+
+        plt.show(block=False)
+        self.__dict__['fig'], self.__dict__['ax'] = fig, ax
         return fig, ax
 
 
@@ -162,16 +255,20 @@ class Spectrum(Block):
         self._init_from(_Spectrum_factory(**kwargs))
 
     def plot(self, *args, **kwargs):
-        """Plot frequency spectrum with interactive legend picking."""
+        """Plot the magnitude of every recorded spectrum.
+
+        Keeps the figure and axis on the block (``self.fig`` / ``self.ax``) as
+        pathsim does, so a caller can adjust the plot afterwards —
+        ``Spc.ax.set_yscale("log")`` in pathsim's ``example_noise.py``.
+        """
         import matplotlib.pyplot as plt
 
         freq, data = self.read()
         if freq is None:
+            warnings.warn("no recording available for plotting in 'Spectrum.plot'")
             return None, None
 
-        fig, ax = plt.subplots(figsize=(8, 4), tight_layout=True, dpi=120)
-        ax.set_prop_cycle(color=_COLORS)
-
+        fig, ax = _new_axes((8, 4))
         labels = self.__dict__.get('_labels', [])
         for p, d in enumerate(data):
             lb = labels[p] if p < len(labels) else f"port {p}"
@@ -182,24 +279,9 @@ class Spectrum(Block):
         ax.set_ylabel("magnitude")
         ax.grid()
 
-        # Legend picking
-        lines = ax.get_lines()
-        leg = ax.get_legend()
-        lined = {}
-        for legline, origline in zip(leg.get_lines(), lines):
-            legline.set_picker(5)
-            lined[legline] = origline
-
-        def on_pick(event):
-            legline = event.artist
-            origline = lined[legline]
-            visible = not origline.get_visible()
-            origline.set_visible(visible)
-            legline.set_alpha(1.0 if visible else 0.2)
-            fig.canvas.draw()
-
-        fig.canvas.mpl_connect("pick_event", on_pick)
+        _pickable_legend(fig, ax)
         plt.show(block=False)
+        self.__dict__['fig'], self.__dict__['ax'] = fig, ax
         return fig, ax
 
 

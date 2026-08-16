@@ -24,6 +24,7 @@ from fastsim._fastsim import (
     ESDIRK32 as _ESDIRK32,
     ESDIRK43 as _ESDIRK43,
     ESDIRK54 as _ESDIRK54,
+    ESDIRK85 as _ESDIRK85,
     GEAR52A as _GEAR52A,
     SteadyState as _SteadyState,
 )
@@ -126,6 +127,11 @@ class ESDIRK43(_ESDIRK43):
 class ESDIRK54(_ESDIRK54):
     """
     Explicit-first-stage Singly Diagonally Implicit Runge-Kutta embedded pair, orders 5 and 4, for adaptive step-size control. L-stable, for stiff problems.
+    """
+
+class ESDIRK85(_ESDIRK85):
+    """
+    Explicit-first-stage Singly Diagonally Implicit Runge-Kutta embedded pair, orders 8 and 5, for adaptive step-size control. Sixteen stages, L-stable and stiffly accurate. Very expensive (15 implicit solves per step) — for stiff reference solutions at tight tolerances; ESDIRK54 is the better general choice.
     """
 
 class GEAR52A(_GEAR52A):

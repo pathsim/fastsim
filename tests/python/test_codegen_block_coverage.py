@@ -31,7 +31,8 @@ import fastsim as fs
 from fastsim import blocks as B
 
 from codegen_common import (
-    ATOL, RTOL, RK4, EUF, gen_main_c_print, match_worst, reference,
+    ATOL, RTOL, RK4, EUF, cc_argv, gen_main_c_print, match_worst, needs_cc,
+    reference,
 )
 
 SOLVER_CLS = {"rk4": RK4, "euler": EUF}
@@ -161,8 +162,10 @@ def _compile_run(files, tmp):
         f.write(gen_main_c_print(files["model.h"], DUR, DT))
     exe = os.path.join(tmp, "a.out")
     cfiles = [os.path.join(tmp, n) for n in files if n.endswith(".c")] + [os.path.join(tmp, "main.c")]
-    cp = subprocess.run(["cc", "-O2", "-ffp-contract=off", "-Werror=array-bounds", "-o", exe, *cfiles, "-lm", f"-I{tmp}"],
-                        capture_output=True, text=True)
+    cp = subprocess.run(
+        cc_argv("-O2", "-ffp-contract=off", "-Werror=array-bounds", "-o", exe,
+                *cfiles, "-lm", f"-I{tmp}"),
+        capture_output=True, text=True)
     assert cp.returncode == 0, f"generated C failed to compile:\n{cp.stderr}"
     out = subprocess.run([exe], check=True, capture_output=True, text=True).stdout
     return np.asarray([list(map(float, ln.split())) for ln in out.strip().splitlines()])
@@ -188,12 +191,14 @@ _DOUBLE_ONLY_IDS = sorted(LOWERABLE_DOUBLE_ONLY)
 _OPAQUE_IDS = sorted(OPAQUE_REJECTED)
 
 
+@needs_cc
 @pytest.mark.parametrize("name", _DOUBLE_FLOAT_IDS + _POSITIVE_IDS + _DOUBLE_ONLY_IDS)
 def test_block_double_parity(name, tmp_path):
     kwargs = {**LOWERABLE_DOUBLE_AND_FLOAT, **LOWERABLE_POSITIVE, **LOWERABLE_DOUBLE_ONLY}[name]
     _check_parity(name, kwargs, name in LOWERABLE_POSITIVE, "double", tmp_path)
 
 
+@needs_cc
 @pytest.mark.parametrize("name", _DOUBLE_FLOAT_IDS + _POSITIVE_IDS)
 def test_block_float_parity(name, tmp_path):
     kwargs = {**LOWERABLE_DOUBLE_AND_FLOAT, **LOWERABLE_POSITIVE}[name]
@@ -222,6 +227,7 @@ def test_opaque_block_rejected_loudly(name):
         f"{name}: rejection message is not actionable: {exc.value}"
 
 
+@needs_cc
 @pytest.mark.parametrize("name", sorted(MULTI_OUTPUT))
 def test_multi_output_block_double_parity(name, tmp_path):
     """Multi-output-port blocks (every output port wired, so the signal buffer is
@@ -281,6 +287,7 @@ _EVENT_ALIGNMENTS = [
 ]
 
 
+@needs_cc
 @pytest.mark.parametrize("name", sorted(_EVENT_BLOCKS))
 @pytest.mark.parametrize("dt,period,phase", _EVENT_ALIGNMENTS)
 def test_event_boundary_parity_vs_compiled(name, dt, period, phase, tmp_path):
@@ -308,7 +315,10 @@ def test_event_boundary_parity_vs_compiled(name, dt, period, phase, tmp_path):
             f.write(main)
         exe = os.path.join(tmp, "a.out")
         cfiles = [os.path.join(tmp, n) for n in files if n.endswith(".c")] + [os.path.join(tmp, "main.c")]
-        cp = subprocess.run(["cc", "-O2", "-ffp-contract=off", "-o", exe, *cfiles, "-lm", f"-I{tmp}"], capture_output=True, text=True)
+        cp = subprocess.run(
+            cc_argv("-O2", "-ffp-contract=off", "-o", exe, *cfiles, "-lm",
+                    f"-I{tmp}"),
+            capture_output=True, text=True)
         assert cp.returncode == 0, cp.stderr
         out = subprocess.run([exe], check=True, capture_output=True, text=True).stdout
     xc = np.asarray([list(map(float, ln.split())) for ln in out.strip().splitlines()])[:, 1:]

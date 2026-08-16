@@ -82,7 +82,12 @@ class TestFrameCount(unittest.TestCase):
 
 
 class TestIncrementalRead(unittest.TestCase):
-    """Incremental pieces concatenate to the full read, no gaps or duplicates."""
+    """Incremental pieces concatenate to the full read, no gaps or duplicates.
+
+    A tick that produced no new samples reads back as ``(None, None)``, same as
+    an empty recording — pathsim's contract, which a streaming consumer has to
+    handle because ticks and timesteps do not line up.
+    """
 
     def test_incremental_concatenates_to_full(self):
         sim, sco = _make_sim()
@@ -92,6 +97,8 @@ class TestIncrementalRead(unittest.TestCase):
             func_callback=lambda: sco.read(incremental=True),
         ):
             t, _ = frame
+            if t is None:
+                continue
             times.extend(np.asarray(t).tolist())
 
         full_t, _ = sco.read(incremental=False)
@@ -107,6 +114,8 @@ class TestIncrementalRead(unittest.TestCase):
             func_callback=lambda: sco.read(incremental=True),
         ):
             t, _ = frame
+            if t is None:
+                continue
             first_times.extend(np.asarray(t).tolist())
         full_t, _ = sco.read(incremental=False)
         np.testing.assert_array_equal(np.asarray(first_times), np.asarray(full_t))

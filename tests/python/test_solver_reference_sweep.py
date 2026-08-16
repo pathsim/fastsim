@@ -26,7 +26,7 @@ import fastsim.solvers as S
 # Every solver exposes the same standalone `integrate(...)` surface. SteadyState
 # is a boundary/fixed-point solver, not an IVP integrator, so it is out of scope.
 ALL_SOLVERS = [
-    "DIRK2", "DIRK3", "ESDIRK32", "ESDIRK4", "ESDIRK43", "ESDIRK54",
+    "DIRK2", "DIRK3", "ESDIRK32", "ESDIRK4", "ESDIRK43", "ESDIRK54", "ESDIRK85",
     "EUB", "EUF", "GEAR52A", "RK4", "RKBS32", "RKCK54", "RKDP54", "RKDP87",
     "RKF21", "RKF45", "RKF78", "RKV65", "SSPRK22", "SSPRK33", "SSPRK34",
 ]
@@ -34,7 +34,8 @@ ALL_SOLVERS = [
 # Implicit / BDF solvers — the only ones that can take the stiff Robertson system
 # with a sane step budget.
 IMPLICIT_SOLVERS = [
-    "DIRK2", "DIRK3", "ESDIRK32", "ESDIRK4", "ESDIRK43", "ESDIRK54", "EUB", "GEAR52A",
+    "DIRK2", "DIRK3", "ESDIRK32", "ESDIRK4", "ESDIRK43", "ESDIRK54", "ESDIRK85",
+    "EUB", "GEAR52A",
 ]
 
 # Adaptive explicit embedded-pair solvers — swept on a non-stiff oscillator.

@@ -158,9 +158,6 @@ pub const FILTER_POLY_REAL_TOL: f64 = 1e-9;
 // Sources / interpolation
 // ======================================================================
 
-/// Minimum rise/fall time for Trapezoidal-pulse sources. Guards against the
-/// `dt / t_rise` singularity when the user sets rise-time = 0.
-pub const SOURCE_RISE_FALL_TIME_MIN: f64 = 1e-12;
 
 /// Threshold for the sample-time gap `|t1 − t0|` in linear interpolation.
 /// Below this the interpolator treats the two samples as coincident.

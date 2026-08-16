@@ -40,7 +40,8 @@ use simulation::{
     PySimulation, PyPendingOps, PyCompiledSimulation,
     PySSPRK22, PySSPRK33, PySSPRK34, PyRK4, PyEUF, PyEUB,
     PyRKF21, PyRKBS32, PyRKF45, PyRKCK54, PyRKDP54, PyRKV65, PyRKF78, PyRKDP87,
-    PyDIRK2, PyDIRK3, PyESDIRK4, PyESDIRK32, PyESDIRK43, PyESDIRK54, PyGEAR52A, PySteadyState,
+    PyDIRK2, PyDIRK3, PyESDIRK4, PyESDIRK32, PyESDIRK43, PyESDIRK54, PyESDIRK85,
+    PyGEAR52A, PySteadyState,
 };
 
 mod blocks;
@@ -229,6 +230,7 @@ fn _fastsim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyESDIRK32>()?;
     m.add_class::<PyESDIRK43>()?;
     m.add_class::<PyESDIRK54>()?;
+    m.add_class::<PyESDIRK85>()?;
     m.add_class::<PyGEAR52A>()?;
     m.add_class::<PySteadyState>()?;
 

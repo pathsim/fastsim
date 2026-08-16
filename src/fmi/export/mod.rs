@@ -1,4 +1,4 @@
-//! FMI 3.0 *source* FMU export (Model Exchange).
+//! FMI 3.0 *source* FMU export (Model Exchange + Co-Simulation).
 //!
 //! A fastsim model is compiled to the struct-API C (`codegen` with
 //! `ModelApi::Struct`), wrapped in a thin FMI 3.0 Model-Exchange C layer, and
@@ -12,8 +12,10 @@
 //! `codegen::struct_layout`, so the generated C and the `modelDescription.xml`
 //! agree by construction (see [`vrmap`]).
 //!
-//! Phase 1 scope: closed (input-free) continuous models with state and no
-//! events. Models with events or no continuous state are rejected up front.
+//! Scope: models with continuous state. Zero-crossing, condition and scheduled
+//! events are exported too — Model Exchange hands the indicators to the importer,
+//! Co-Simulation resolves them inside `fmi3DoStep`. A model with no continuous
+//! state is rejected up front.
 
 pub mod headers;
 pub mod package;
@@ -24,7 +26,7 @@ use std::path::Path;
 
 use crate::codegen::{self, CodegenOptions, ModelApi};
 use crate::fmi::model_description::{
-    DefaultExperiment, ModelDescription, ModelExchangeInfo,
+    CoSimulationInfo, DefaultExperiment, ModelDescription, ModelExchangeInfo,
 };
 use crate::fmi::{FmiError, Result};
 use crate::ir::schema::Module;
@@ -32,7 +34,7 @@ use crate::ir::schema::Module;
 /// Knobs for [`export_fmu`]. All optional: the model name defaults to the IR
 /// module name, the instantiation token to a deterministic `{fastsim-<id>}`,
 /// and the default experiment fields are emitted only when set.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ExportOptions {
     /// `modelName` attribute; defaults to the module's name.
     pub model_name: Option<String>,
@@ -42,6 +44,35 @@ pub struct ExportOptions {
     pub stop_time: Option<f64>,
     pub tolerance: Option<f64>,
     pub step_size: Option<f64>,
+    /// Solver baked into the emitted C. Model Exchange never runs it — the
+    /// importer integrates — but Co-Simulation does, so this is what the FMU
+    /// will actually solve with. `None` leaves the codegen default (RK4), and
+    /// `None` from a caller that *has* a solver means the FMU is exported
+    /// without the Co-Simulation interface rather than with the wrong one.
+    pub solver: Option<codegen::SolverChoice>,
+    /// LTE tolerances for the emitted adaptive step controller, inherited from
+    /// the source simulation so the FMU runs the same error budget.
+    pub tolerances: Option<codegen::Tolerances>,
+    /// Advertise `<CoSimulation>`. Off when the source solver has no emittable
+    /// equivalent: an FMU that claims Co-Simulation must integrate with the
+    /// solver it was built from, not silently with a different one.
+    pub co_simulation: bool,
+}
+
+impl Default for ExportOptions {
+    fn default() -> Self {
+        Self {
+            model_name: None,
+            instantiation_token: None,
+            start_time: None,
+            stop_time: None,
+            tolerance: None,
+            step_size: None,
+            solver: None,
+            tolerances: None,
+            co_simulation: true,
+        }
+    }
 }
 
 /// One file in the FMU layout: an archive path (e.g. `"sources/fmu.c"`) and its
@@ -61,7 +92,13 @@ pub struct FmuFile {
 pub fn fmu_files(module: &Module, opts: &ExportOptions) -> Result<Vec<FmuFile>> {
     // The struct API is the FMI substrate: a `model_t` with `model_init` /
     // `model_deriv` / `*_get_signal` / `*_set_signal`.
-    let cg = CodegenOptions { api: ModelApi::Struct, ..Default::default() };
+    let mut cg = CodegenOptions { api: ModelApi::Struct, ..Default::default() };
+    if let Some(solver) = opts.solver {
+        cg.solver = solver;
+    }
+    if let Some(tol) = opts.tolerances {
+        cg.tolerances = tol;
+    }
 
     let layout = codegen::struct_layout(module, &cg).map_err(cg_err)?;
     let events = codegen::event_layout(module, &cg).map_err(cg_err)?;
@@ -98,6 +135,7 @@ pub fn fmu_files(module: &Module, opts: &ExportOptions) -> Result<Vec<FmuFile>> 
         layout.jvp,
         &events,
         fmi.vr.ind_base,
+        opts.step_size,
     );
 
     // The modelDescription.xml. `needsCompletedIntegratorStep` is required for
@@ -111,7 +149,23 @@ pub fn fmu_files(module: &Module, opts: &ExportOptions) -> Result<Vec<FmuFile>> 
             provides_directional_derivatives: layout.jvp,
             can_get_and_set_fmu_state: false,
         }),
-        None,
+        // Co-Simulation as well: the generated C already integrates itself
+        // (`<name>_step`), so `fmi3DoStep` is a loop over it. One FMU offering
+        // both interfaces is what the Reference-FMUs do, and it lets an importer
+        // pick whichever fits — its own solver, or ours.
+        opts.co_simulation.then(|| CoSimulationInfo {
+            model_identifier: model_identifier.clone(),
+            // The internal step is subdivided to fit whatever the master asks for.
+            can_handle_variable_communication_step_size: true,
+            fixed_internal_step_size: None,
+            // Events are resolved inside `fmi3DoStep`, so the master is never
+            // asked to enter Event Mode and never needs an early return.
+            has_event_mode: false,
+            provides_intermediate_update: false,
+            can_return_early_after_intermediate_update: false,
+            might_return_early_from_do_step: false,
+            can_get_and_set_fmu_state: false,
+        }),
         DefaultExperiment {
             start_time: opts.start_time,
             stop_time: opts.stop_time,

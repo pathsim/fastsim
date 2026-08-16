@@ -60,6 +60,35 @@ def _autoport(blocks):
     return out
 
 
+def _attach_declared_events(blocks):
+    """Register the events a block publishes in its own ``events`` list.
+
+    pathsim's `Block` carries `self.events` and its `Simulation` collects them,
+    which is how a user-written block declares an internal schedule:
+
+    .. code-block:: python
+
+        class SAR(Block):
+            def __init__(self, ...):
+                ...
+                self.events = [Schedule(t_start=tau, t_period=T, func_act=_step)]
+
+    fastsim's own blocks attach theirs through `add_event` during porting, so
+    nothing here has to be undone; this only picks up the ones the Rust side
+    cannot see. Registering the same event twice is harmless — `add_event`
+    de-duplicates — so a block that does both still ends up with one.
+    """
+    for blk in blocks:
+        declared = getattr(blk, "events", None)
+        if not declared:
+            continue
+        add = getattr(blk, "add_event", None)
+        if add is None:
+            continue
+        for evt in declared:
+            add(evt)
+
+
 class Simulation:
     """Transient block-diagram simulation.
 
@@ -139,8 +168,12 @@ class Simulation:
         # Rust engine and raise TypeError instead of being silently dropped.
         _ensure_port_logging(log)
         # port() attaches any translated internal events to the block itself, so
-        # the Rust simulation tracks them automatically — no harvesting here.
+        # the Rust simulation tracks them automatically. What it cannot know
+        # about is a block that carries its events in a plain `events` list —
+        # how pathsim's own `Block` publishes them, and how a user-written
+        # subclass declares its internal schedule (pathsim's `example_sar.py`).
         ported = _autoport(blocks or [])
+        _attach_declared_events(ported)
         conns = connections if connections is not None else []
         # `tolerance_fpi` is retired (kept in the signature for pathsim parity);
         # only forward it when the user set it explicitly, so a default call does

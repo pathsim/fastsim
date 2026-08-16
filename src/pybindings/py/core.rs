@@ -167,7 +167,16 @@ impl PyBlock {
     /// block-internal event once the block is added.
     fn add_event(&self, event: &Bound<'_, PyAny>) -> PyResult<()> {
         let evt = super::events::extract_event_ref(event)?;
-        self.inner.borrow_mut().events.push(evt);
+        // Idempotent: the same event may reach a block from more than one side
+        // — attached during porting AND published in the block's own `events`
+        // list, which `Simulation` harvests. Registering it twice would detect
+        // and resolve it twice per step.
+        let key = std::rc::Rc::as_ptr(&evt) as *const ();
+        let blk = self.inner.borrow_mut();
+        if blk.events.iter().any(|e| std::rc::Rc::as_ptr(e) as *const () == key) {
+            return Ok(());
+        }
+        blk.events.push(evt);
         Ok(())
     }
 
@@ -267,6 +276,11 @@ impl PyBlock {
             stop_time,
             tolerance,
             step_size,
+            // A subsystem is a component, not a simulation: it carries no solver
+            // of its own, so the Co-Simulation path keeps the codegen default.
+            solver: None,
+            tolerances: None,
+            co_simulation: true,
         };
         crate::fmi::export::export_fmu(&module, path, &opts)
             .map_err(|e| PyValueError::new_err(format!("FMU export failed: {e}")))
@@ -285,9 +299,44 @@ impl PyBlock {
         super::helpers::to_numpy(py, &self.inner.borrow().inputs.to_array())
     }
 
+    /// The output register as an ndarray whose assignments reach the block.
+    ///
+    /// Still a numpy array (see the note above); `fastsim.blocks._outputs`
+    /// only makes `block.outputs[i] = value` land instead of writing into a
+    /// snapshot that is thrown away — how a block written in Python reports
+    /// its result. Falls back to the plain array if that module cannot be
+    /// imported, so the getter never fails.
     #[getter]
-    fn outputs(&self, py: Python<'_>) -> Py<PyAny> {
-        super::helpers::to_numpy(py, &self.inner.borrow().outputs.to_array())
+    fn outputs<'py>(slf: &Bound<'py, Self>) -> Bound<'py, PyAny> {
+        let py = slf.py();
+        let data = slf.borrow().inner.borrow().outputs.to_array();
+        let arr = super::helpers::to_numpy(py, &data);
+        py.import("fastsim.blocks._outputs")
+            .and_then(|m| m.call_method1("_view", (&arr, slf)))
+            .unwrap_or_else(|_| arr.into_bound(py))
+    }
+
+    /// Replace the whole output register (`block.outputs = [...]`).
+    #[setter]
+    fn set_outputs(&self, values: Vec<f64>) {
+        self.inner.borrow_mut().outputs.update_from_array(&values);
+    }
+
+    /// Write one output element, growing the register as pathsim's does.
+    /// Used by the writable view; `block.outputs[i] = v` is the public spelling.
+    fn _set_output(&self, index: usize, value: f64) {
+        self.inner.borrow_mut().outputs.set_single(index, value);
+    }
+
+    /// This block's `(A, B, C, D)` if it is linear time-invariant, else `None`.
+    ///
+    /// Every LTI block is built from a state-space realization — transfer
+    /// functions, PT1/PT2, the Butterworth and allpass filters — and this
+    /// reports the matrices actually integrated, not a re-derivation.
+    fn state_space(&self) -> Option<(Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>)> {
+        let blk = self.inner.borrow();
+        let get = |k: &str| blk.data_vec2.get(k).cloned();
+        Some((get("A")?, get("B")?, get("C")?, get("D")?))
     }
 
     #[getter]

@@ -10,7 +10,6 @@ Generation is the always-on guard; compilation is the local deep check.
 """
 import itertools
 import os
-import shutil
 import subprocess
 
 import numpy as np
@@ -20,8 +19,10 @@ import fastsim as fs
 from fastsim.blocks import (StepSource, Integrator, Scope, SinusoidalSource,
                             Function, Amplifier, RandomNumberGenerator)
 
-_CC = (shutil.which("gcc") or shutil.which("cc")
-       or next((p for p in ["C:/Repositories/TEMP/mingw64/bin/gcc.exe"] if os.path.exists(p)), None))
+from codegen_common import CC
+
+# Compiler resolution lives in `codegen_common` (probed, honours $FASTSIM_CC).
+_CC = CC
 
 AXES = {
     "numeric": ["double", "float"],

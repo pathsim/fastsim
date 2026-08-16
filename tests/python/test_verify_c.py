@@ -10,17 +10,10 @@ import pytest
 
 from fastsim import Simulation, Connection
 from fastsim.blocks import Integrator, Amplifier
-from fastsim._fastsim import find_c_compiler
 
-_CC = find_c_compiler()
-_REQUIRE_CC = os.environ.get("FASTSIM_REQUIRE_CC", "") not in ("", "0")
-if _CC is None and _REQUIRE_CC:
-    raise RuntimeError(
-        "FASTSIM_REQUIRE_CC is set but no working C compiler was found; "
-        "point $FASTSIM_CC at a C99 compiler with libm."
-    )
+from codegen_common import needs_cc
 
-pytestmark = pytest.mark.skipif(_CC is None, reason="no working C compiler found")
+pytestmark = needs_cc
 
 
 def _oscillator():

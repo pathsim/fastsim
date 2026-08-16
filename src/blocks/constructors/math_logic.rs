@@ -467,15 +467,19 @@ pub fn logic_block(name: &'static str, func: impl Fn(f64, f64) -> f64 + 'static)
 binary_logic_block!(greater_than, "GreaterThan", |b, a, c| b.gt(a, c));
 // LessThan: y = 1 if a < b, else 0
 binary_logic_block!(less_than, "LessThan", |b, a, c| b.lt(a, c));
-// LogicAnd: y = 1 if a > 0.5 AND b > 0.5, else 0 (product of the two bools)
+// Truth convention: an input is TRUE when it is non-zero, matching pathsim
+// (`bool(x)`) and the usual C/Python/Simulink rule. Expressed as `|x| > 0` so
+// it stays exact — a 0.5 threshold would silently disagree with pathsim for
+// every input strictly between 0 and 0.5, which is most of a signal's range.
+// LogicAnd: y = 1 if a != 0 AND b != 0, else 0 (product of the two bools)
 binary_logic_block!(logic_and, "LogicAnd", |b, a, c| {
-    let h = b.cst(0.5);
-    b.mul(b.gt(a, h), b.gt(c, h))
+    let z = b.cst(0.0);
+    b.mul(b.gt(b.abs(a), z), b.gt(b.abs(c), z))
 });
-// LogicOr: y = 1 if a > 0.5 OR b > 0.5, else 0 (max of the two bools)
+// LogicOr: y = 1 if a != 0 OR b != 0, else 0 (max of the two bools)
 binary_logic_block!(logic_or, "LogicOr", |b, a, c| {
-    let h = b.cst(0.5);
-    b.max(b.gt(a, h), b.gt(c, h))
+    let z = b.cst(0.0);
+    b.max(b.gt(b.abs(a), z), b.gt(b.abs(c), z))
 });
 
 /// Equal: y = 1 if |a - b| < tolerance, else 0
@@ -512,12 +516,13 @@ pub fn equal_block(tolerance: f64) -> BlockRef {
     Rc::new(FastCell::new(blk))
 }
 
-/// LogicNot: y = 1 if u <= 0.5, else 0  (== 1 - [u > 0.5])
+/// LogicNot: y = 1 if u == 0, else 0  (== 1 - [|u| > 0]); see the truth
+/// convention note on `logic_and`.
 pub fn logic_not() -> BlockRef {
     fn build<B: Builder>(b: &B, u0: B::N) -> B::N {
-        let h = b.cst(0.5);
+        let z = b.cst(0.0);
         let one = b.cst(1.0);
-        b.sub(one, b.gt(u0, h))
+        b.sub(one, b.gt(b.abs(u0), z))
     }
     let mut blk = Block::default_block();
     blk.type_name = "LogicNot";

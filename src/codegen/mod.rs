@@ -312,20 +312,27 @@ impl SolverChoice {
     /// Classical RK4.
     pub const RK4: SolverChoice = SolverChoice { tableau: &crate::solvers::tableaus::RK4 };
 
-    /// Select a solver by tableau name. Accepts every explicit tableau in the
-    /// runtime registry (`"RK4"`, `"RKDP54"`, `"RKCK54"`, ...) plus `"EUF"`
-    /// (forward Euler). Returns `None` for an unknown name or an implicit tableau
-    /// (DIRK/ESDIRK codegen needs a generated Newton/linear solve — not yet).
+    /// Select a solver by tableau name. Accepts every tableau in the runtime
+    /// registry — explicit (`"RK4"`, `"RKDP54"`, ...) and implicit
+    /// (`"DIRK2"`, `"ESDIRK43"`, ...) — plus `"EUF"` and `"EUB"`, the two Euler
+    /// methods the runtime drives through dedicated factories rather than
+    /// tableaus. Returns `None` for an unknown name.
+    ///
+    /// Implicit tableaus emit a per-stage Newton solve with a differenced
+    /// Jacobian and a dense LU; multistep methods (GEAR) are not tableaus and
+    /// have no emitter.
     pub fn by_name(name: &str) -> Option<SolverChoice> {
         let t = if name.eq_ignore_ascii_case("EUF") {
             &solver::EUF_TABLEAU
+        } else if name.eq_ignore_ascii_case("EUB") {
+            &solver::EUB_TABLEAU
         } else {
             crate::solvers::tableaus::by_name(name)?
         };
-        t.is_explicit().then_some(SolverChoice { tableau: t })
+        Some(SolverChoice { tableau: t })
     }
 
-    /// The Butcher tableau the emitter lowers (always explicit by construction).
+    /// The Butcher tableau the emitter lowers.
     pub(crate) fn tableau(self) -> &'static crate::solvers::tableaus::Tableau {
         self.tableau
     }
@@ -1162,7 +1169,7 @@ mod tests {
     }
 
     #[test]
-    fn solver_choice_by_name_accepts_explicit_rejects_implicit() {
+    fn solver_choice_by_name_resolves_explicit_and_implicit() {
         // Default is RK4 (explicit).
         assert_eq!(SolverChoice::default().tableau().name, "RK4");
         // Explicit fixed-step and adaptive tableaus resolve.
@@ -1172,9 +1179,17 @@ mod tests {
         // Forward Euler via the codegen-only EUF tableau, case-insensitively.
         assert_eq!(SolverChoice::by_name("euf").unwrap().tableau().name, "EUF");
         assert_eq!(SolverChoice::EULER.tableau().name, "EUF");
-        // Implicit tableaus are not yet emitted; unknown names are rejected.
-        assert!(SolverChoice::by_name("ESDIRK43").is_none());
-        assert!(SolverChoice::by_name("DIRK2").is_none());
+        // Implicit tableaus emit a per-stage Newton solve.
+        assert!(SolverChoice::by_name("ESDIRK43").unwrap().tableau().is_implicit());
+        assert!(SolverChoice::by_name("DIRK2").unwrap().tableau().is_implicit());
+        // Backward Euler via the codegen-only EUB tableau, the implicit twin of EUF.
+        let eub = SolverChoice::by_name("eub").unwrap().tableau();
+        assert_eq!(eub.name, "EUB");
+        assert!(eub.is_implicit());
+        assert_eq!(eub.s, 1);
+        // GEAR is a multistep method, not a tableau — no emitter, and no entry
+        // in the tableau registry to resolve.
+        assert!(SolverChoice::by_name("GEAR52A").is_none());
         assert!(SolverChoice::by_name("NotASolver").is_none());
     }
 

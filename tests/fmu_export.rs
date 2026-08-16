@@ -1449,3 +1449,200 @@ fn nested_subsystem_input_resolves_through_nesting() {
         }
     }
 }
+
+// ======================================================================================
+// Importer interoperability
+//
+// Both checks below come from driving an exported FMU through FMPy, an importer
+// that is not ours. The host loop above shares fastsim's own call order, so it
+// could not have caught either.
+// ======================================================================================
+
+/// Every FMI 3.0 entry point, as exported by the official Reference-FMUs.
+const FMI3_ENTRY_POINTS: &[&str] = &[
+    "fmi3ActivateModelPartition", "fmi3CompletedIntegratorStep", "fmi3DeserializeFMUState",
+    "fmi3DoStep", "fmi3EnterConfigurationMode", "fmi3EnterContinuousTimeMode",
+    "fmi3EnterEventMode", "fmi3EnterInitializationMode", "fmi3EnterStepMode",
+    "fmi3EvaluateDiscreteStates", "fmi3ExitConfigurationMode", "fmi3ExitInitializationMode",
+    "fmi3FreeFMUState", "fmi3FreeInstance", "fmi3GetAdjointDerivative",
+    "fmi3GetBinary", "fmi3GetBoolean", "fmi3GetClock",
+    "fmi3GetContinuousStateDerivatives", "fmi3GetContinuousStates", "fmi3GetDirectionalDerivative",
+    "fmi3GetEventIndicators", "fmi3GetFMUState", "fmi3GetFloat32",
+    "fmi3GetFloat64", "fmi3GetInt16", "fmi3GetInt32",
+    "fmi3GetInt64", "fmi3GetInt8", "fmi3GetIntervalDecimal",
+    "fmi3GetIntervalFraction", "fmi3GetNominalsOfContinuousStates", "fmi3GetNumberOfContinuousStates",
+    "fmi3GetNumberOfEventIndicators", "fmi3GetNumberOfVariableDependencies", "fmi3GetOutputDerivatives",
+    "fmi3GetShiftDecimal", "fmi3GetShiftFraction", "fmi3GetString",
+    "fmi3GetUInt16", "fmi3GetUInt32", "fmi3GetUInt64",
+    "fmi3GetUInt8", "fmi3GetVariableDependencies", "fmi3GetVersion",
+    "fmi3InstantiateCoSimulation", "fmi3InstantiateModelExchange", "fmi3InstantiateScheduledExecution",
+    "fmi3Reset", "fmi3SerializeFMUState", "fmi3SerializedFMUStateSize",
+    "fmi3SetBinary", "fmi3SetBoolean", "fmi3SetClock",
+    "fmi3SetContinuousStates", "fmi3SetDebugLogging", "fmi3SetFMUState",
+    "fmi3SetFloat32", "fmi3SetFloat64", "fmi3SetInt16",
+    "fmi3SetInt32", "fmi3SetInt64", "fmi3SetInt8",
+    "fmi3SetIntervalDecimal", "fmi3SetIntervalFraction", "fmi3SetShiftDecimal",
+    "fmi3SetShiftFraction", "fmi3SetString", "fmi3SetTime",
+    "fmi3SetUInt16", "fmi3SetUInt32", "fmi3SetUInt64",
+    "fmi3SetUInt8", "fmi3Terminate", "fmi3UpdateDiscreteStates",
+];
+
+/// A Model-Exchange FMU must still export the WHOLE FMI 3.0 symbol table.
+///
+/// An importer is free to resolve every entry point when it loads the shared
+/// library, whatever `modelDescription.xml` declares — FMPy does, and the
+/// Reference-FMUs export all 75 for that reason. Exporting only the
+/// Model-Exchange subset made the FMU fail to load with
+/// `function 'fmi3ActivateModelPartition' not found`, before a single line of
+/// the model ran. The ones fastsim does not implement refuse when called.
+#[test]
+fn exports_the_complete_fmi3_symbol_table() {
+    let files = fmu_files(&decay_module(), &ExportOptions::default()).unwrap();
+    let sources: String = files
+        .iter()
+        .filter(|f| f.name.ends_with(".c") || f.name.ends_with(".h"))
+        .map(|f| f.contents.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let missing: Vec<&str> = FMI3_ENTRY_POINTS
+        .iter()
+        .copied()
+        .filter(|name| !sources.contains(&format!("{name}(")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "exported FMU is missing {} FMI 3.0 entry points: {missing:?}",
+        missing.len()
+    );
+}
+
+/// An output must reflect the state that was just set, with no derivative call
+/// in between.
+///
+/// Signals are a cache that only the algebraic pass fills, so reading one
+/// straight after `fmi3SetTime` + `fmi3SetContinuousStates` used to report the
+/// previous step's value. Every importer that asks for outputs on its own
+/// schedule sees this: under CVode at rtol=1e-10 the exported decay model
+/// tracked `exp(-t)` to 1.5e-2 instead of 8e-10.
+#[test]
+fn outputs_refresh_without_a_derivative_call() {
+    let Some(cc) = find_cc() else {
+        eprintln!("no working C compiler found — skipping FMU output-freshness check");
+        return;
+    };
+
+    let m = decay_module();
+    let files = fmu_files(&m, &ExportOptions::default()).unwrap();
+    let md = ModelDescription::from_str(
+        &files.iter().find(|f| f.name == "modelDescription.xml").unwrap().contents,
+    )
+    .unwrap();
+    let token = md.instantiation_token.clone();
+    let out_vr = md
+        .variables
+        .iter()
+        .find(|v| v.causality == Causality::Output)
+        .expect("decay model has an output")
+        .value_reference;
+
+    let uniq = UNIQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("fastsim_fmu_fresh_{uniq}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    for f in &files {
+        if let Some(base) = f.name.strip_prefix("sources/") {
+            std::fs::write(dir.join(base), &f.contents).unwrap();
+        }
+    }
+
+    // Set three different states in a row and read the output after each — never
+    // calling a derivative. y = x, so the output must follow immediately.
+    let main_c = format!(
+        r#"#include <stdio.h>
+#include "fmi3.h"
+int main(void) {{
+    fmi3Instance m = fmi3InstantiateModelExchange("decay", "{token}", "", fmi3False, fmi3False, NULL, NULL);
+    if (!m) return 1;
+    if (fmi3EnterInitializationMode(m, fmi3False, 0.0, 0.0, fmi3False, 0.0) != fmi3OK) return 2;
+    if (fmi3ExitInitializationMode(m) != fmi3OK) return 3;
+    if (fmi3EnterContinuousTimeMode(m) != fmi3OK) return 4;
+    size_t ns = 0;
+    fmi3GetNumberOfContinuousStates(m, &ns);
+    fmi3ValueReference vr = {out_vr};
+    double probes[3] = {{0.25, 0.5, 0.75}};
+    for (int i = 0; i < 3; i++) {{
+        double x[8]; for (size_t j = 0; j < ns; j++) x[j] = probes[i];
+        fmi3SetTime(m, 0.1 * (i + 1));
+        fmi3SetContinuousStates(m, x, ns);
+        double y = -1.0;
+        if (fmi3GetFloat64(m, &vr, 1, &y, 1) != fmi3OK) return 5;
+        printf("%.17g ", y);
+    }}
+    printf("\n");
+    fmi3FreeInstance(m);
+    return 0;
+}}
+"#
+    );
+    std::fs::write(dir.join("main.c"), main_c).unwrap();
+
+    let out = fastsim::codegen::verify::cc_command_in(&cc, &dir)
+        .args(["fmu.c", "main.c", "-O0", "-o", "fresh.exe", "-lm"])
+        .output()
+        .expect("spawn cc");
+    assert!(
+        out.status.success(),
+        "FMU C did not compile:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let run = match Command::new(dir.join("fresh.exe")).output() {
+        Ok(r) if r.status.success() => r,
+        _ => {
+            eprintln!("exe would not launch — skipping numeric comparison");
+            return;
+        }
+    };
+    let text = String::from_utf8_lossy(&run.stdout);
+    let got: Vec<f64> = text.split_whitespace().filter_map(|t| t.parse().ok()).collect();
+    assert_eq!(got.len(), 3, "unexpected exe output: {text:?}");
+    for (got, want) in got.iter().zip([0.25, 0.5, 0.75]) {
+        assert!(
+            (got - want).abs() < 1e-12,
+            "output {got} does not reflect the state just set ({want}) — stale signal cache; \
+             read back {got:?}"
+        );
+    }
+}
+
+/// A simulation-level event cannot be exported, and must say so.
+///
+/// `Module::events` holds events registered on the `Simulation` rather than on a
+/// block. Only their kind and timing reach the IR — the guard and the action are
+/// host closures — so the generated C could only leave them out. It used to do
+/// exactly that: a bouncing ball exported cleanly and then fell through the
+/// floor, in both Model Exchange and Co-Simulation. `compile()` has always
+/// refused these; export now agrees with it.
+#[test]
+fn simulation_level_events_are_refused() {
+    let mut m = decay_module();
+    m.events.push(Event {
+        id: EventId(0),
+        // An opaque global event: the guard region is advisory and empty, the
+        // action lives in host code.
+        kind: EventKind::ZeroCross {
+            guard: Region::default(),
+            direction: Direction::Falling,
+        },
+        effect: Region::default(),
+        opaque: true,
+    });
+
+    let err = fmu_files(&m, &ExportOptions::default()).unwrap_err().to_string();
+    assert!(
+        err.contains("simulation-level") && err.contains("global"),
+        "expected a message naming the cause, got: {err}"
+    );
+    // Block-internal events still export — this is not a blanket refusal.
+    assert!(fmu_files(&zerocross_module(), &ExportOptions::default()).is_ok());
+}

@@ -11,6 +11,7 @@ tolerances, the import contract and the C harnesses, so the two layers cannot
 drift apart.
 """
 import itertools
+import os
 import re
 
 import numpy as np
@@ -18,6 +19,52 @@ import numpy as np
 import fastsim as fs
 from fastsim import blocks as B
 from fastsim.solvers import RK4, EUF
+from fastsim._fastsim import find_c_compiler
+
+# --------------------------------------------------------------------------------------
+# Compiler resolution — one answer for the whole suite.
+#
+# `find_c_compiler` is the same resolver `verify_c` uses: `$FASTSIM_CC`, `$CC`,
+# then every `cc`/`clang`/`gcc` on PATH, each of which must compile AND run a
+# double + libm probe before it is accepted. That probe is the point. Several
+# modules used to resolve their own compiler with `shutil.which("gcc")`, and one
+# simply ran `"cc"`; on a machine whose first PATH `gcc` is Anaconda's MinGW 5.3
+# — which ICEs on any double — that silently took down every compile-and-run
+# test while a working MinGW-w64 sat further along PATH.
+#
+# `$FASTSIM_REQUIRE_CC=1` turns "no compiler" from a skip into a hard failure,
+# for machines meant to verify (CI / release gate).
+# --------------------------------------------------------------------------------------
+
+CC = find_c_compiler()
+REQUIRE_CC = os.environ.get("FASTSIM_REQUIRE_CC", "") not in ("", "0")
+
+if REQUIRE_CC and CC is None:
+    raise RuntimeError(
+        "FASTSIM_REQUIRE_CC is set but no working C compiler was found; "
+        "point $FASTSIM_CC at a C99 compiler with libm.")
+
+
+def _needs_cc():
+    import pytest
+    return pytest.mark.skipif(
+        CC is None and not REQUIRE_CC,
+        reason="no working C compiler (set FASTSIM_CC, or FASTSIM_REQUIRE_CC to fail instead)")
+
+
+needs_cc = _needs_cc()
+
+
+def cc_argv(*args):
+    """The compiler spec split into argv, plus `args`.
+
+    The spec may be multi-word (`FASTSIM_CC="zig cc"`); the first token is the
+    program. Same semantics as the Rust side's `codegen::verify::cc_command`.
+    """
+    if CC is None:
+        raise RuntimeError("no C compiler; guard the call with `needs_cc`")
+    return [*CC.split(), *args]
+
 
 # --------------------------------------------------------------------------------------
 # Verify tolerances (mirror pathview-fastsim/src/lib/constants/codegen.ts). float codegen
@@ -130,6 +177,72 @@ def _rng():
     return fs.Simulation([r, i, o], [fs.Connection(r, i), fs.Connection(i, o)], dt=0.05, log=False)
 
 
+# --------------------------------------------------------------------------------------
+# Subsystem topologies.
+#
+# Every system above is FLAT. Subsystem flattening was therefore never exercised
+# by this matrix, and two independent defects lived there unnoticed: interface
+# splices resolved per port instead of per element (so every channel of a
+# multi-input subsystem read the same signal), and an algebraic pass ordered by
+# flat index (invalid once a subsystem's children are spliced in at the parent's
+# position). These four cover the shapes that distinguish those cases.
+# --------------------------------------------------------------------------------------
+
+def _sub_multi_input():
+    """Subsystem with TWO inputs — the multi-channel interface splice."""
+    iface, add, integ = fs.Interface(), B.Adder(), B.Integrator(0.0)
+    sub = fs.Subsystem([iface, add, integ], [
+        fs.Connection(iface[0], add[0]), fs.Connection(iface[1], add[1]),
+        fs.Connection(add, integ), fs.Connection(integ, iface[0])])
+    s1 = B.SinusoidalSource(frequency=1.0, amplitude=1.0)
+    s2 = B.Constant(value=0.5)
+    o = B.Scope()
+    return fs.Simulation([sub, s1, s2, o], [
+        fs.Connection(s1, sub[0]), fs.Connection(s2, sub[1]),
+        fs.Connection(sub, o)], dt=0.02, log=False)
+
+
+def _sub_after_source():
+    """Subsystem fed by a parent-level source — the ordering case: the parent
+    schedule ranks the subsystem, not the inner block that needs the source."""
+    iface, gain = fs.Interface(), B.Amplifier(gain=3.0)
+    sub = fs.Subsystem([iface, gain], [
+        fs.Connection(iface[0], gain), fs.Connection(gain, iface[0])])
+    src, integ, o = B.SinusoidalSource(frequency=0.5, amplitude=2.0), B.Integrator(0.0), B.Scope()
+    return fs.Simulation([sub, src, integ, o], [
+        fs.Connection(src, sub[0]), fs.Connection(sub, integ),
+        fs.Connection(integ, o)], dt=0.02, log=False)
+
+
+def _sub_nested():
+    """Two levels of nesting — splices must resolve recursively."""
+    i_if, i_gain = fs.Interface(), B.Amplifier(gain=2.0)
+    inner = fs.Subsystem([i_if, i_gain], [
+        fs.Connection(i_if[0], i_gain), fs.Connection(i_gain, i_if[0])])
+    o_if, o_add = fs.Interface(), B.Adder()
+    outer = fs.Subsystem([o_if, inner, o_add], [
+        fs.Connection(o_if[0], inner[0]), fs.Connection(o_if[1], o_add[1]),
+        fs.Connection(inner, o_add[0]), fs.Connection(o_add, o_if[0])])
+    s1, s2 = B.SinusoidalSource(frequency=1.0, amplitude=1.0), B.Constant(value=1.0)
+    integ, o = B.Integrator(0.0), B.Scope()
+    return fs.Simulation([outer, s1, s2, integ, o], [
+        fs.Connection(s1, outer[0]), fs.Connection(s2, outer[1]),
+        fs.Connection(outer, integ), fs.Connection(integ, o)], dt=0.02, log=False)
+
+
+def _sub_feedback():
+    """Feedback closing THROUGH the subsystem boundary: the plant lives inside,
+    the controller outside, so the loop crosses the interface twice."""
+    iface, gain, integ = fs.Interface(), B.Amplifier(gain=-1.0), B.Integrator(1.0)
+    plant = fs.Subsystem([iface, gain, integ], [
+        fs.Connection(iface[0], gain), fs.Connection(gain, integ),
+        fs.Connection(integ, iface[0])])
+    ctrl, o = B.Amplifier(gain=0.5), B.Scope()
+    return fs.Simulation([plant, ctrl, o], [
+        fs.Connection(plant, ctrl, o), fs.Connection(ctrl, plant[0])],
+        dt=0.02, log=False)
+
+
 SYSTEMS = {
     "ode": (_ode, 2.0),
     "mathchain": (_mathchain, 2.0),
@@ -139,6 +252,10 @@ SYSTEMS = {
     "pid": (_pid, 3.0),
     "event": (_event, 2.0),
     "rng": (_rng, 2.0),
+    "sub_multi_input": (_sub_multi_input, 2.0),
+    "sub_after_source": (_sub_after_source, 2.0),
+    "sub_nested": (_sub_nested, 2.0),
+    "sub_feedback": (_sub_feedback, 3.0),
 }
 
 # Systems too precision-sensitive to compare float codegen against the (always-double)
@@ -153,6 +270,21 @@ AXES = {
     "solver": ["rk4", "euler"],
     "api": ["struct"],
 }
+
+# Every tableau `to_c` can emit. The matrix above pins the solver axis to two
+# fixed-step methods because the trajectory check compares against a fixed-step
+# reference — but that left the eight ADAPTIVE tableaus, which emit a completely
+# different integrator (embedded error estimate, accept/reject loop, carried
+# step size in the model struct), generated by nothing. The editor defaults to
+# an adaptive solver, so that was the common case going unchecked.
+# `test_codegen_solver_sweep.py` sweeps these for generation + import contract.
+FIXED_STEP_SOLVERS = ["rk4", "euler", "ssprk22", "ssprk33", "ssprk34"]
+ADAPTIVE_SOLVERS = ["rkbs32", "rkf21", "rkf45", "rkck54", "rkdp54", "rkv65", "rkf78", "rkdp87"]
+# Implicit tableaus emit a third integrator again: a per-stage Newton over a
+# differenced Jacobian and a dense LU, none of which the explicit kernels touch.
+# `eub` is backward Euler, the implicit twin of `euler`.
+IMPLICIT_SOLVERS = ["eub", "dirk2", "dirk3", "esdirk32", "esdirk43", "esdirk54"]
+ALL_EMITTABLE_SOLVERS = FIXED_STEP_SOLVERS + ADAPTIVE_SOLVERS + IMPLICIT_SOLVERS
 KEYS = list(AXES)
 COMBOS = list(itertools.product(*AXES.values()))
 SOLVER_CLS = {"rk4": RK4, "euler": EUF}

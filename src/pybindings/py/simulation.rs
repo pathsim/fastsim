@@ -648,6 +648,14 @@ impl PySimulation {
     ) -> PyResult<()> {
         #[allow(clippy::needless_borrow)]
         let module = crate::ir::builder::module_from_sim(&self.inner.borrow(), name);
+        let sim = self.inner.borrow();
+        // Co-Simulation integrates with the solver baked into the emitted C, so
+        // it has to be THIS simulation's — same reason `compile()` inherits it.
+        // An implicit solver has no emittable tableau; rather than bake in a
+        // different one, the FMU is exported without claiming Co-Simulation at
+        // all. Model Exchange is unaffected either way: there the importer
+        // integrates and the baked-in solver is never called.
+        let solver = crate::codegen::SolverChoice::by_name(sim.engine.type_name);
         let opts = crate::fmi::export::ExportOptions {
             model_name: None,
             instantiation_token,
@@ -655,6 +663,12 @@ impl PySimulation {
             stop_time,
             tolerance,
             step_size,
+            solver,
+            tolerances: Some(crate::codegen::Tolerances {
+                abs: sim.engine.tolerance_lte_abs,
+                rel: sim.engine.tolerance_lte_rel,
+            }),
+            co_simulation: solver.is_some(),
         };
         crate::fmi::export::export_fmu(&module, path, &opts)
             .map_err(|e| PyValueError::new_err(format!("FMU export failed: {e}")))
@@ -1501,6 +1515,8 @@ solver_class!(PyESDIRK43, "ESDIRK43",
     "Explicit-first-stage Singly Diagonally Implicit Runge-Kutta embedded pair, orders 4 and 3, for adaptive step-size control. L-stable, for stiff problems.");
 solver_class!(PyESDIRK54, "ESDIRK54",
     "Explicit-first-stage Singly Diagonally Implicit Runge-Kutta embedded pair, orders 5 and 4, for adaptive step-size control. L-stable, for stiff problems.");
+solver_class!(PyESDIRK85, "ESDIRK85",
+    "Explicit-first-stage Singly Diagonally Implicit Runge-Kutta embedded pair, orders 8 and 5, for adaptive step-size control. Sixteen stages, L-stable and stiffly accurate. Very expensive (15 implicit solves per step) — for stiff reference solutions at tight tolerances; ESDIRK54 is the better general choice.");
 solver_class!(PyGEAR52A, "GEAR52A",
     "Gear-type backward differentiation formula (BDF) with adaptive order (up to 5) and adaptive step size. Multi-step and L-stable, for stiff problems.");
 solver_class!(PySteadyState, "SteadyState",

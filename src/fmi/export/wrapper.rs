@@ -32,6 +32,7 @@ pub fn emit_wrapper(
     has_jvp: bool,
     events: &EventLayout,
     ind_base: u32,
+    cs_internal_step: Option<f64>,
 ) -> String {
     let model_t = format!("{model_name}_t");
     let get_signal = format!("{model_name}_get_signal");
@@ -42,6 +43,7 @@ pub fn emit_wrapper(
     // unprefixed forms.
     let init_fn = format!("{model_name}_init");
     let deriv_fn = format!("{model_name}_deriv");
+    let step_fn = format!("{model_name}_step");
     let outputs_fn = format!("{model_name}_outputs");
 
     let n_state = vr.n_state;
@@ -58,6 +60,9 @@ pub fn emit_wrapper(
     let input_end = input_base as usize + n_input;
     // Time-event firing tolerance, sourced from the central constant (not inline).
     let event_tol = format!("{:?}", crate::constants::FMU_EVENT_TIME_TOL);
+    // `fmi3DoStep` subdivides the master's communication step so no internal
+    // step exceeds this. 0.0 means "take the communication step whole".
+    let cs_internal_step = format!("{:?}", cs_internal_step.filter(|h| *h > 0.0).unwrap_or(0.0));
 
     // The body is a fixed template with substituted identifiers; keeping it as
     // one literal makes the generated C easy to read against the spec.
@@ -67,9 +72,21 @@ pub fn emit_wrapper(
             .replace("SET_SIGNAL", &set_signal)
             .replace("MODEL_INIT", &init_fn)
             .replace("MODEL_DERIV", &deriv_fn)
+            .replace("MODEL_STEP", &step_fn)
             .replace("MODEL_JVP", &jvp_fn)
     };
-    let mut body = subst(WRAPPER_BODY);
+    // Signals live in a buffer that only the algebraic pass writes, so a getter
+    // that just reads it reports whatever the last `_deriv` / `_outputs` call
+    // left there. An importer is free to call `fmi3SetTime` +
+    // `fmi3SetContinuousStates` and then read an output directly — FMPy does —
+    // and would see the value from the previous step. `fmi3GetFloat64` calls
+    // this first, so an output always reflects the current `(t, x, u)`.
+    // Declared ahead of the body because that is where it is used.
+    let mut body = format!(
+        "\nstatic void fastsim_refresh({model_t}* m) {{ {} }}\n\n",
+        if n_sig > 0 { format!("{outputs_fn}(m);") } else { "(void)m;".to_string() },
+    );
+    body.push_str(&subst(WRAPPER_BODY));
     body.push_str(&emit_event_section(&model_t, &outputs_fn, events, n_sig));
     body.push_str(&emit_input_section(&model_t, n_input));
     if has_jvp {
@@ -98,6 +115,7 @@ pub fn emit_wrapper(
          #define INPUT_BASE {input_base}u\n\
          #define INPUT_END  {input_end}u\n\
          #define EVENT_TIME_TOL {event_tol}\n\
+         #define CS_INTERNAL_STEP {cs_internal_step}\n\
          #define INSTANTIATION_TOKEN \"{instantiation_token}\"\n\
          \n\
          /* accessors defined in the generated sections below */\n\
@@ -358,6 +376,11 @@ FMI3_Export fmi3Status fmi3GetFloat64(
     if (!m || nValueReferences != nValues) return fmi3Error;
     fmi3Float64 dxbuf[N_STATE];
     int have_deriv = 0;
+    /* Signals are a cache of the algebraic pass; bring it up to date with the
+       current (t, x, u) before reading, or the caller gets the previous step. */
+    for (size_t k = 0; k < nValueReferences; k++) {
+        if (valueReferences[k] < SIGNAL_END) { fastsim_refresh(m); break; }
+    }
     for (size_t k = 0; k < nValueReferences; k++) {
         fmi3ValueReference r = valueReferences[k];
         if (r == TIME_VR) {
@@ -397,6 +420,152 @@ FMI3_Export fmi3Status fmi3SetFloat64(
     }
     return fmi3OK;
 }
+
+
+/* --- Co-Simulation -------------------------------------------------------
+   The generated model integrates itself with the solver chosen at code
+   generation time, so a communication step is a loop over MODEL_STEP. The FMU
+   offers this alongside Model Exchange; the importer picks which to instantiate. */
+
+FMI3_Export fmi3Instance fmi3InstantiateCoSimulation(
+        fmi3String instanceName, fmi3String instantiationToken, fmi3String resourcePath,
+        fmi3Boolean visible, fmi3Boolean loggingOn, fmi3Boolean eventModeUsed,
+        fmi3Boolean earlyReturnAllowed, const fmi3ValueReference requiredIntermediateVariables[],
+        size_t nRequiredIntermediateVariables, fmi3InstanceEnvironment instanceEnvironment,
+        fmi3LogMessageCallback logMessage, fmi3IntermediateUpdateCallback intermediateUpdate) {
+    (void)instanceName; (void)resourcePath; (void)visible; (void)loggingOn;
+    (void)eventModeUsed; (void)earlyReturnAllowed; (void)requiredIntermediateVariables;
+    (void)nRequiredIntermediateVariables; (void)instanceEnvironment; (void)logMessage;
+    (void)intermediateUpdate;
+    if (!instantiationToken || strcmp(instantiationToken, INSTANTIATION_TOKEN) != 0) return NULL;
+    MODEL_T* m = (MODEL_T*)malloc(sizeof(MODEL_T));
+    if (m) MODEL_INIT(m);
+    return (fmi3Instance)m;
+}
+
+FMI3_Export fmi3Status fmi3EnterStepMode(fmi3Instance instance) { (void)instance; return fmi3OK; }
+
+FMI3_Export fmi3Status fmi3DoStep(
+        fmi3Instance instance, fmi3Float64 currentCommunicationPoint,
+        fmi3Float64 communicationStepSize, fmi3Boolean noSetFMUStatePriorToCurrentPoint,
+        fmi3Boolean* eventHandlingNeeded, fmi3Boolean* terminateSimulation,
+        fmi3Boolean* earlyReturn, fmi3Float64* lastSuccessfulTime) {
+    (void)noSetFMUStatePriorToCurrentPoint;
+    MODEL_T* m = (MODEL_T*)instance;
+    if (!m || communicationStepSize < 0.0) return fmi3Error;
+
+    /* Anchor on the master's clock so a long run cannot accumulate drift. */
+    m->time = currentCommunicationPoint;
+
+    if (communicationStepSize > 0.0) {
+        /* The master may ask for a longer step than the model was tuned for, so
+           subdivide until no internal step exceeds the exported step size. */
+        int n = 1;
+        if (CS_INTERNAL_STEP > 0.0 && communicationStepSize > CS_INTERNAL_STEP) {
+            n = (int)(communicationStepSize / CS_INTERNAL_STEP);
+            if (n < 1) n = 1;
+            if ((double)n * CS_INTERNAL_STEP < communicationStepSize) n++;
+        }
+        double h = communicationStepSize / (double)n;
+
+        /* Events are ours to resolve here. A Co-Simulation master does no event
+           location — it only advances the clock — so the FMU has to detect and
+           apply what happens inside the communication step itself. Seed the
+           crossing history first; in Model Exchange the importer does that by
+           calling fmi3CompletedIntegratorStep after every accepted step. */
+        fmi3CompletedIntegratorStep(instance, fmi3True, NULL, NULL);
+
+        for (int i = 0; i < n; i++) {
+            MODEL_STEP(m, h);
+
+            fmi3Boolean needs_update = fmi3False, terminate = fmi3False;
+            fmi3Boolean nominals_changed = fmi3False, states_changed = fmi3False;
+            fmi3Boolean next_defined = fmi3False;
+            fmi3Float64 next_time = 0.0;
+            fmi3UpdateDiscreteStates(instance, &needs_update, &terminate,
+                                     &nominals_changed, &states_changed,
+                                     &next_defined, &next_time);
+            if (terminate) {
+                if (terminateSimulation) *terminateSimulation = fmi3True;
+                if (eventHandlingNeeded) *eventHandlingNeeded = fmi3False;
+                if (earlyReturn) *earlyReturn = fmi3True;
+                if (lastSuccessfulTime) *lastSuccessfulTime = m->time;
+                return fmi3OK;
+            }
+        }
+    }
+
+    if (eventHandlingNeeded) *eventHandlingNeeded = fmi3False;
+    if (terminateSimulation) *terminateSimulation = fmi3False;
+    if (earlyReturn) *earlyReturn = fmi3False;
+    if (lastSuccessfulTime) *lastSuccessfulTime = m->time;
+    return fmi3OK;
+}
+
+/* --- entry points this FMU does not implement -------------------------- */
+/*
+ * Present so the shared library exports the complete FMI 3.0 symbol table (see
+ * the header). Each refuses: fmi3Error, or NULL for the instantiate functions.
+ * Nothing here touches the model.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wunused-parameter"
+#endif
+
+FMI3_Export fmi3Status fmi3ActivateModelPartition(fmi3Instance instance, fmi3ValueReference clockReference, fmi3Float64 activationTime) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3DeserializeFMUState(fmi3Instance instance, const fmi3Byte serializedState[], size_t size, fmi3FMUState* FMUState) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3EnterConfigurationMode(fmi3Instance instance) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3EvaluateDiscreteStates(fmi3Instance instance) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3ExitConfigurationMode(fmi3Instance instance) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3FreeFMUState(fmi3Instance instance, fmi3FMUState* FMUState) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetAdjointDerivative(fmi3Instance instance, const fmi3ValueReference unknowns[], size_t nUnknowns, const fmi3ValueReference knowns[], size_t nKnowns, const fmi3Float64 seed[], size_t nSeed, fmi3Float64 sensitivity[], size_t nSensitivity) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetBinary(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, size_t valueSizes[], fmi3Binary values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetBoolean(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3Boolean values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetClock(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3Clock values[]) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetFMUState(fmi3Instance instance, fmi3FMUState* FMUState) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetFloat32(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3Float32 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetInt16(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3Int16 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetInt32(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3Int32 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetInt64(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3Int64 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetInt8(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3Int8 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetIntervalDecimal(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3Float64 intervals[], fmi3IntervalQualifier qualifiers[]) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetIntervalFraction(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3UInt64 counters[], fmi3UInt64 resolutions[], fmi3IntervalQualifier qualifiers[]) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetNumberOfVariableDependencies(fmi3Instance instance, fmi3ValueReference valueReference, size_t* nDependencies) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetOutputDerivatives(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3Int32 orders[], fmi3Float64 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetShiftDecimal(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3Float64 shifts[]) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetShiftFraction(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3UInt64 counters[], fmi3UInt64 resolutions[]) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetString(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3String values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetUInt16(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3UInt16 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetUInt32(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3UInt32 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetUInt64(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3UInt64 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetUInt8(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, fmi3UInt8 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3GetVariableDependencies(fmi3Instance instance, fmi3ValueReference dependent, size_t elementIndicesOfDependent[], fmi3ValueReference independents[], size_t elementIndicesOfIndependents[], fmi3DependencyKind dependencyKinds[], size_t nDependencies) { return fmi3Error; }
+FMI3_Export fmi3Instance fmi3InstantiateScheduledExecution(fmi3String instanceName, fmi3String instantiationToken, fmi3String resourcePath, fmi3Boolean visible, fmi3Boolean loggingOn, fmi3InstanceEnvironment instanceEnvironment, fmi3LogMessageCallback logMessage, fmi3ClockUpdateCallback clockUpdate, fmi3LockPreemptionCallback lockPreemption, fmi3UnlockPreemptionCallback unlockPreemption) { return NULL; }
+FMI3_Export fmi3Status fmi3SerializeFMUState(fmi3Instance instance, fmi3FMUState FMUState, fmi3Byte serializedState[], size_t size) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SerializedFMUStateSize(fmi3Instance instance, fmi3FMUState FMUState, size_t* size) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetBinary(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const size_t valueSizes[], const fmi3Binary values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetBoolean(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3Boolean values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetClock(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3Clock values[]) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetFMUState(fmi3Instance instance, fmi3FMUState FMUState) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetFloat32(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3Float32 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetInt16(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3Int16 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetInt32(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3Int32 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetInt64(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3Int64 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetInt8(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3Int8 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetIntervalDecimal(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3Float64 intervals[]) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetIntervalFraction(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3UInt64 counters[], const fmi3UInt64 resolutions[]) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetShiftDecimal(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3Float64 shifts[]) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetShiftFraction(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3UInt64 counters[], const fmi3UInt64 resolutions[]) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetString(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3String values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetUInt16(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3UInt16 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetUInt32(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3UInt32 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetUInt64(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3UInt64 values[], size_t nValues) { return fmi3Error; }
+FMI3_Export fmi3Status fmi3SetUInt8(fmi3Instance instance, const fmi3ValueReference valueReferences[], size_t nValueReferences, const fmi3UInt8 values[], size_t nValues) { return fmi3Error; }
+
+#if defined(__GNUC__) || defined(__clang__)
+#  pragma GCC diagnostic pop
+#endif
 "##;
 
 /// The directional-derivative entry point, appended only when the model has an
