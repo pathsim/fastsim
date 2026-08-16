@@ -58,6 +58,16 @@ jobs:
       - name: Build and install fastsim
         run: pip install -e . --no-build-isolation
 
+      # The pathsim wheel ships no examples/, so the whole-model parity layer
+      # would find an empty corpus — and `PATHSIM_REQUIRED` turns that into a
+      # failure rather than a silent skip. Fetch them from the source repo, the
+      # same way the dev CI does, so this gate is as strong as that one.
+      - name: Fetch the pathsim example corpus
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/pathsim/pathsim.git /tmp/pathsim-src
+          git -C /tmp/pathsim-src sparse-checkout set examples
+          echo "PATHSIM_EXAMPLES=/tmp/pathsim-src/examples" >> "$GITHUB_ENV"
+
       - name: Run Python tests
         run: python -m pytest tests/python/ -q --tb=short
         env:

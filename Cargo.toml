@@ -1,6 +1,6 @@
 [package]
 name = "fastsim"
-version = "0.26.1"
+version = "0.26.2"
 edition = "2021"
 description = "A fast, Rust-based block-diagram system simulation framework — drop-in replacement for pathsim"
 license = "PolyForm-Noncommercial-1.0.0"
