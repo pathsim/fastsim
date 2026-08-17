@@ -22,4 +22,4 @@ from fastsim import blocks, events, solvers  # noqa: F401,E402
 # fastsim-only: the standalone tracer/JIT and the IR types.
 from fastsim import ir, jit  # noqa: F401,E402
 
-__version__ = "0.28.0"
+__version__ = "0.28.1"

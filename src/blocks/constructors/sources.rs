@@ -163,17 +163,31 @@ pub(crate) fn triangle_eval<B: Builder>(b: &B, freq: B::N, amp: B::N, tau: B::N,
     b.mul(amp, b.sub(b.mul(b.cst(2.0), inner), b.cst(1.0)))
 }
 
+/// Drift-corrected phase for a discontinuous time-driven source.
+///
+/// `y` is the time in periods (period = 1). The simulation clock accumulates
+/// by repeated addition of the timestep, so it sits up to a relative ~1e-10
+/// drift allowance below an exact phase boundary on the step that *means* that
+/// boundary. A phase computed from the raw clock then flips one step later
+/// than pathsim's event-based sources, whose `Schedule` absorbs exactly this
+/// drift (pathsim#249, `events::schedule::tolerance_at`). Nudging `y` by the
+/// same allowance — capped far below a half period so no genuine phase can be
+/// absorbed — keeps the formula sources flipping on the same step.
+fn drift_phase<B: Builder>(b: &B, y: B::N) -> B::N {
+    let tol = b.min(b.mul(b.cst(1e-10), b.abs(y)), b.cst(0.05));
+    let y_eff = b.add(y, tol);
+    b.sub(y_eff, b.floor(y_eff))
+}
+
 /// SquareWave math: y = A if frac((t+tau)*freq) < 0.5 else -A.
 pub(crate) fn square_eval<B: Builder>(b: &B, amp: B::N, freq: B::N, tau: B::N, t: B::N) -> B::N {
-    let y = b.mul(b.add(t, tau), freq);
-    let frac = b.sub(y, b.floor(y));
+    let frac = drift_phase(b, b.mul(b.add(t, tau), freq));
     b.select(b.lt(frac, b.cst(0.5)), amp, b.neg(amp))
 }
 
 /// Clock math: y = 1 if frac(t/period) < 0.5 else 0.
 pub(crate) fn clock_eval<B: Builder>(b: &B, period: B::N, t: B::N) -> B::N {
-    let y = b.div(t, period);
-    let frac = b.sub(y, b.floor(y));
+    let frac = drift_phase(b, b.div(t, period));
     b.select(b.lt(frac, b.cst(0.5)), b.cst(1.0), b.cst(0.0))
 }
 

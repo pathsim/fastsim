@@ -191,10 +191,14 @@ KNOWN_DIVERGENCE = {
     # Every Schedule-clocked block, in one stroke: the tick-timing fix
     # (pathsim#249) moves which step a drift-boundary tick fires on, so all of
     # them disagree with a pre-fix pathsim and agree again once it releases.
+    # Clock/SquareWave are formula-driven in fastsim and event-driven in
+    # pathsim; both sides carry the drift correction since fastsim 0.28.0 /
+    # pathsim 0.25.0, so they only disagree against a pre-fix pathsim.
     **{k: v for name in (
-        "ADC", "Delay", "DiscreteDerivative", "DiscreteIntegrator",
-        "DiscreteStateSpace", "DiscreteTransferFunction", "FIR", "SampleHold",
-        "StepSource", "TappedDelay", "Wrapper", "ZeroOrderHold",
+        "ADC", "Clock", "ClockSource", "Delay", "DiscreteDerivative",
+        "DiscreteIntegrator", "DiscreteStateSpace", "DiscreteTransferFunction",
+        "FIR", "SampleHold", "SquareWaveSource", "StepSource", "TappedDelay",
+        "Wrapper", "ZeroOrderHold",
     ) for k, v in _pending(name, _schedule_stamps_the_drifted_time,
                            _SCHEDULE_DRIFT_REASON).items()},
     # Verified to agree exactly once pathsim carries the fix, so this entry is
@@ -216,15 +220,8 @@ KNOWN_DIVERGENCE = {
     "DAC": "sampling event and the driving bit edges are ordered differently "
            "within a step, so the held code lags by one sample in one engine. "
            "Scheduling difference, not a block defect.",
-    # fastsim's side is fixed (see test_pulse_edges.py): with zero rise/fall it
-    # now matches the ideal pulse exactly. What remains is the FIRST sample:
-    # with tau=0 the pulse is high on [0, T*duty), so t=0 belongs to the high
-    # phase — fastsim reports `amplitude`, pathsim still reports its initial
-    # 'low' because the phase events have not fired yet at t=0.
-    "Pulse": "t=0 only: pathsim reports its initial 'low' phase although a "
-             "tau=0 pulse is already high at t=0. fastsim matches the ideal "
-             "pulse exactly over the whole run.",
-    "PulseSource": "same first-sample difference as Pulse.",
+    # Pulse/PulseSource: healed by pathsim 0.25.0 — its t=0 phase event now
+    # fires at t=0 (pathsim#249), so both engines report the high phase there.
     # Investigated: the block itself agrees. Wired directly (sources -> PowProd
     # -> scope) both engines match the definition prod(u_i**e_i) EXACTLY, with
     # and without a downstream integrator. The disagreement only appears in this
