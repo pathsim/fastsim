@@ -35,7 +35,9 @@ use crate::utils::register::Register;
 
 use crate::fmi::bindings::fmi3ValueReference;
 use crate::fmi::instance::{Cs, DiscreteStateUpdate, Instance, Me};
-use crate::fmi::model_description::{ModelDescription, StartValue, VarType};
+use crate::fmi::model_description::{
+    Causality, ModelDescription, StartValue, VarType, Variable,
+};
 use crate::fmi::unzip::FmuArchive;
 use crate::fmi::Result;
 
@@ -45,56 +47,365 @@ use super::block::{Block, BlockRef};
 // Common backend helpers
 // =========================================================================
 
-fn collect_overrides(
-    md: &ModelDescription,
-    overrides: &HashMap<String, f64>,
-) -> Result<(Vec<fmi3ValueReference>, Vec<f64>)> {
-    let mut vrs = Vec::new();
-    let mut vals = Vec::new();
-    for (name, val) in overrides {
+/// Expand a user-supplied override to exactly one value per array element.
+///
+/// A single value is broadcast across the whole array — the same rule FMI 3.0
+/// §2.4.7.5 defines for the XML's own `start` attribute, so a scalar override
+/// behaves identically whether the target is a scalar or an array. Any other
+/// length mismatch is a mistake worth reporting rather than silently padding.
+fn expand_override(name: &str, given: &[f64], n: usize) -> Result<Vec<f64>> {
+    if given.len() > 1 && given.len() != n {
+        return Err(crate::fmi::FmiError::ModelDescription(format!(
+            "start value for `{name}` has {} entries but the variable has {n} \
+             element(s); pass one value per element, or a single value to \
+             broadcast across all of them",
+            given.len()
+        )));
+    }
+    Ok(StartValue::Float64(given.to_vec())
+        .expand_f64(n)
+        .expect("a Float64 start always expands to f64"))
+}
+
+/// Write one variable's values through the `fmi3Set*` call matching its declared
+/// type.
+///
+/// FastSim's public API speaks `f64` throughout, so integer and boolean
+/// variables are converted here. That keeps `start_values` usable for every
+/// numeric FMI type instead of silently ignoring everything but `Float64`.
+/// `String`, `Binary` and `Clock` have no meaningful `f64` representation and
+/// are rejected rather than approximated.
+fn set_variable_f64<K>(
+    inst: &Instance<K>,
+    name: &str,
+    v: &Variable,
+    values: &[f64],
+) -> Result<()> {
+    let vr = [v.value_reference];
+    macro_rules! set_as {
+        ($call:ident, $ty:ty) => {{
+            let converted: Vec<$ty> = values.iter().map(|x| *x as $ty).collect();
+            inst.$call(&vr, &converted)
+        }};
+    }
+    match v.var_type {
+        VarType::Float64 => inst.set_float64(&vr, values),
+        VarType::Float32 => set_as!(set_float32, f32),
+        VarType::Int8 => set_as!(set_int8, i8),
+        VarType::UInt8 => set_as!(set_uint8, u8),
+        VarType::Int16 => set_as!(set_int16, i16),
+        VarType::UInt16 => set_as!(set_uint16, u16),
+        VarType::Int32 => set_as!(set_int32, i32),
+        VarType::UInt32 => set_as!(set_uint32, u32),
+        // FMI 3.0 §2.2.6: `Enumeration` variables are accessed through the
+        // Int64 pair, not through an accessor of their own.
+        VarType::Int64 | VarType::Enumeration => set_as!(set_int64, i64),
+        VarType::UInt64 => set_as!(set_uint64, u64),
+        VarType::Boolean => {
+            let converted: Vec<bool> = values.iter().map(|x| *x != 0.0).collect();
+            inst.set_boolean(&vr, &converted)
+        }
+        VarType::String | VarType::Binary | VarType::Clock => {
+            Err(crate::fmi::FmiError::ModelDescription(format!(
+                "`{name}` is a {:?} variable and cannot be set from a number",
+                v.var_type
+            )))
+        }
+    }
+}
+
+/// Push the `start_values` entries that name structural parameters into the FMU
+/// through Configuration Mode, then record the new sizes on the model
+/// description.
+///
+/// Structural parameters are the only way to resize an FMI 3.0 array, and
+/// §2.3.2 makes Configuration Mode the only state in which they may be set — a
+/// plain `fmi3Set*` in Initialization Mode is rejected. Because the array shapes
+/// derived from them feed port counts and every `nValues` argument afterwards,
+/// this has to run before initialization and before port discovery.
+///
+/// Returns the names it consumed, so the caller does not apply them a second
+/// time during initialization.
+fn apply_structural_overrides<K>(
+    inst: &Instance<K>,
+    md: &mut ModelDescription,
+    overrides: &HashMap<String, Vec<f64>>,
+) -> Result<Vec<String>> {
+    let mut pending: Vec<(String, fmi3ValueReference, Vec<f64>)> = Vec::new();
+    for (name, given) in overrides {
         let v = md
             .variable_by_name(name)
             .ok_or_else(|| crate::fmi::FmiError::UnknownVariable(name.clone()))?;
-        if v.var_type == VarType::Float64 {
-            vrs.push(v.value_reference);
-            vals.push(*val);
+        if v.causality != Causality::StructuralParameter {
+            continue;
+        }
+        let n = md.n_values(v);
+        pending.push((name.clone(), v.value_reference, expand_override(name, given, n)?));
+    }
+    if pending.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !inst.supports_configuration_mode() {
+        return Err(crate::fmi::FmiError::ModelDescription(
+            "FMU declares structural parameters but does not export \
+             fmi3EnterConfigurationMode"
+                .into(),
+        ));
+    }
+
+    inst.enter_configuration_mode()?;
+    for (name, vr, values) in &pending {
+        let v = md
+            .variable_by_vr(*vr)
+            .expect("value reference came from this description");
+        set_variable_f64(inst, name, v, values)?;
+    }
+    inst.exit_configuration_mode()?;
+
+    // Re-derive every array shape from the values we just wrote. Only the first
+    // element can act as a dimension (a dimension is a single UInt64), which is
+    // also all `Dimension::Referenced` ever reads.
+    for (_, vr, values) in &pending {
+        if let Some(first) = values.first() {
+            md.set_dimension_size(*vr, first.max(0.0) as u64);
         }
     }
-    Ok((vrs, vals))
+    Ok(pending.into_iter().map(|(name, _, _)| name).collect())
 }
 
-/// Baseline start values from the XML to apply during initialization.
+/// The flat `Float64` value layout of a group of FMI variables.
 ///
-/// Per FMI 3.0 §2.4.7.5, `variability="constant"` variables have fixed values
-/// and cannot be set. We also skip `initial="calculated"` vars — the FMU
-/// computes them itself. That leaves inputs, parameters, and `initial=exact`
-/// (or `approx`) variables with explicit `start` attributes.
-fn declared_float64_starts(md: &ModelDescription) -> (Vec<fmi3ValueReference>, Vec<f64>) {
-    use crate::fmi::model_description::{Initial, Variability};
-    let mut vrs = Vec::new();
-    let mut vals = Vec::new();
-    for v in &md.variables {
-        if v.var_type != VarType::Float64 {
-            continue;
+/// `vrs` is what goes to `fmi3Get*`/`fmi3Set*` as `nValueReferences`, while
+/// `n_values` is the length of the value buffer those calls read or write. The
+/// two are equal only when every variable is a scalar; an array contributes one
+/// reference and several elements.
+///
+/// Used for the quantities FMI defines as `Float64` by construction — the
+/// continuous states and their derivatives. Ports go through `PortLayout`
+/// instead, because they may be of any numeric type.
+struct ValueLayout {
+    vrs: Vec<fmi3ValueReference>,
+    n_values: usize,
+}
+
+impl ValueLayout {
+    fn collect<'a>(
+        md: &ModelDescription,
+        vars: impl Iterator<Item = &'a Variable>,
+    ) -> Self {
+        let selected: Vec<&Variable> =
+            vars.filter(|v| v.var_type == VarType::Float64).collect();
+        Self {
+            vrs: selected.iter().map(|v| v.value_reference).collect(),
+            n_values: selected.iter().map(|v| md.n_values(v)).sum(),
         }
-        if v.variability == Variability::Constant {
-            continue;
-        }
-        if matches!(v.initial, Some(Initial::Calculated)) {
-            continue;
-        }
-        let Some(sv) = &v.start else { continue };
-        let x = match sv {
-            StartValue::Float64(x) => *x,
-            other => match other.as_f64() {
-                Some(x) => x,
-                None => continue,
-            },
-        };
-        vrs.push(v.value_reference);
-        vals.push(x);
     }
-    (vrs, vals)
+
+    fn is_empty(&self) -> bool {
+        self.vrs.is_empty()
+    }
+}
+
+/// A typed scratch buffer plus the `fmi3Get*` / `fmi3Set*` pair that fills it.
+///
+/// FastSim ports are `f64`, but an FMU's inputs and outputs may be of any FMI
+/// numeric type — `Stair` publishes only an `Int32`, and `Feedthrough` mixes
+/// `Float32`, `Int32` and `Boolean` with its `Float64` signals. Widening every
+/// numeric type to `f64` at the port boundary makes those FMUs usable while
+/// keeping one FFI call per type per step.
+macro_rules! typed_scratch {
+    ($( $variant:ident, $elem:ty, $get:ident, $set:ident, $( $vt:ident )|+ ; )*) => {
+        pub enum Scratch { $( $variant(Vec<$elem>), )* }
+
+        impl Scratch {
+            /// A buffer of `n` elements for `ty`, or `None` for the types that
+            /// have no meaningful `f64` representation (`String`, `Binary`,
+            /// `Clock`) and therefore cannot become ports.
+            fn new(ty: VarType, n: usize) -> Option<Self> {
+                match ty {
+                    $( $( VarType::$vt )|+ => Some(Scratch::$variant(vec![Default::default(); n])), )*
+                    _ => None,
+                }
+            }
+
+            fn read<K>(&mut self, inst: &Instance<K>, vrs: &[fmi3ValueReference]) -> Result<()> {
+                match self { $( Scratch::$variant(b) => inst.$get(vrs, b), )* }
+            }
+
+            fn write<K>(&self, inst: &Instance<K>, vrs: &[fmi3ValueReference]) -> Result<()> {
+                match self { $( Scratch::$variant(b) => inst.$set(vrs, b), )* }
+            }
+
+            /// Element `i` widened to `f64`.
+            fn get(&self, i: usize) -> f64 {
+                match self { $( Scratch::$variant(b) => b[i].into_f64(), )* }
+            }
+
+            /// Store `v` into element `i`, narrowing to the FMI type.
+            fn put(&mut self, i: usize, v: f64) {
+                match self { $( Scratch::$variant(b) => b[i] = FromF64::from_f64(v), )* }
+            }
+        }
+    };
+}
+
+/// Widening and narrowing between an FMI element type and FastSim's `f64` port
+/// representation. `bool` maps to 0.0/1.0 and back through `!= 0.0`, which is
+/// the convention FastSim's own boolean-valued blocks use.
+pub trait IntoF64 {
+    fn into_f64(self) -> f64;
+}
+pub trait FromF64 {
+    fn from_f64(v: f64) -> Self;
+}
+
+macro_rules! numeric_conv {
+    ($($ty:ty),*) => {$(
+        impl IntoF64 for $ty {
+            fn into_f64(self) -> f64 { self as f64 }
+        }
+        impl FromF64 for $ty {
+            fn from_f64(v: f64) -> Self { v as $ty }
+        }
+    )*};
+}
+numeric_conv!(f32, f64, i8, u8, i16, u16, i32, u32, i64, u64);
+
+impl IntoF64 for bool {
+    fn into_f64(self) -> f64 {
+        if self { 1.0 } else { 0.0 }
+    }
+}
+impl FromF64 for bool {
+    fn from_f64(v: f64) -> Self {
+        v != 0.0
+    }
+}
+
+typed_scratch! {
+    F64, f64, get_float64, set_float64, Float64;
+    F32, f32, get_float32, set_float32, Float32;
+    I8,  i8,  get_int8,    set_int8,    Int8;
+    U8,  u8,  get_uint8,   set_uint8,   UInt8;
+    I16, i16, get_int16,   set_int16,   Int16;
+    U16, u16, get_uint16,  set_uint16,  UInt16;
+    I32, i32, get_int32,   set_int32,   Int32;
+    U32, u32, get_uint32,  set_uint32,  UInt32;
+    // FMI 3.0 §2.2.6 routes `Enumeration` through the Int64 accessors.
+    I64, i64, get_int64,   set_int64,   Int64 | Enumeration;
+    U64, u64, get_uint64,  set_uint64,  UInt64;
+    B,   bool, get_boolean, set_boolean, Boolean;
+}
+
+/// One FMI type's contribution to a block's port vector.
+pub struct PortGroup {
+    vrs: Vec<fmi3ValueReference>,
+    /// Port index of each variable's first element, parallel to `vrs`.
+    offsets: Vec<usize>,
+    /// Element count of each variable, parallel to `vrs`.
+    counts: Vec<usize>,
+    buf: Scratch,
+}
+
+/// A block's ports, backed by FMI variables of possibly differing types.
+///
+/// Ports are numbered in the order the variables are declared, whatever their
+/// type, and an array variable occupies one port per element. The groups below
+/// scatter that flat numbering into one typed FFI call per type.
+pub struct PortLayout {
+    groups: Vec<PortGroup>,
+    n_ports: usize,
+}
+
+impl PortLayout {
+    fn collect<'a>(
+        md: &ModelDescription,
+        vars: impl Iterator<Item = &'a Variable>,
+    ) -> Self {
+        // (type, vrs, offsets, counts) accumulated in first-appearance order so
+        // the layout is deterministic.
+        let mut by_type: Vec<(VarType, Vec<fmi3ValueReference>, Vec<usize>, Vec<usize>)> =
+            Vec::new();
+        let mut n_ports = 0usize;
+
+        for v in vars {
+            let n = md.n_values(v);
+            if n == 0 || Scratch::new(v.var_type, 0).is_none() {
+                continue; // zero-sized array, or a type with no f64 meaning
+            }
+            let entry = match by_type.iter_mut().find(|(t, ..)| *t == v.var_type) {
+                Some(e) => e,
+                None => {
+                    by_type.push((v.var_type, Vec::new(), Vec::new(), Vec::new()));
+                    by_type.last_mut().expect("just pushed")
+                }
+            };
+            entry.1.push(v.value_reference);
+            entry.2.push(n_ports);
+            entry.3.push(n);
+            n_ports += n;
+        }
+
+        let groups = by_type
+            .into_iter()
+            .map(|(ty, vrs, offsets, counts)| PortGroup {
+                buf: Scratch::new(ty, counts.iter().sum())
+                    .expect("type was accepted during collection"),
+                vrs,
+                offsets,
+                counts,
+            })
+            .collect();
+        Self { groups, n_ports }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.n_ports == 0
+    }
+
+    /// Where a value reference's elements sit in the port numbering, as
+    /// `(first port, element count)`. `None` if it is not one of these ports.
+    fn locate(&self, vr: fmi3ValueReference) -> Option<(usize, usize)> {
+        self.groups.iter().find_map(|g| {
+            g.vrs
+                .iter()
+                .position(|&x| x == vr)
+                .map(|i| (g.offsets[i], g.counts[i]))
+        })
+    }
+
+    /// Read every group from the FMU and scatter the values into `out`, which
+    /// the caller sizes to `n_ports`. A failing group leaves its ports at their
+    /// previous values — see the error policy in the file header.
+    fn read<K>(&mut self, inst: &Instance<K>, out: &mut [f64]) {
+        for g in &mut self.groups {
+            if g.buf.read(inst, &g.vrs).is_err() {
+                continue;
+            }
+            let mut src = 0usize;
+            for (&off, &count) in g.offsets.iter().zip(&g.counts) {
+                for k in 0..count {
+                    out[off + k] = g.buf.get(src + k);
+                }
+                src += count;
+            }
+        }
+    }
+
+    /// Gather `values` (indexed by port) into the typed buffers and push each
+    /// group to the FMU. A short `values` leaves the remaining ports at zero.
+    fn write<K>(&mut self, inst: &Instance<K>, values: &[f64]) {
+        for g in &mut self.groups {
+            let mut dst = 0usize;
+            for (&off, &count) in g.offsets.iter().zip(&g.counts) {
+                for k in 0..count {
+                    g.buf.put(dst + k, values.get(off + k).copied().unwrap_or(0.0));
+                }
+                dst += count;
+            }
+            let _ = g.buf.write(inst, &g.vrs);
+        }
+    }
 }
 
 /// Drain the `UpdateDiscreteStates` fixed-point loop. FMI 3.0 §3.2.1 requires
@@ -115,35 +426,62 @@ fn drain_discrete_state_updates<K>(inst: &Instance<K>) -> Result<DiscreteStateUp
 }
 
 /// Shared FMI 3.0 initialization sequence used by both ME and CS block
-/// constructors: `EnterInit → apply declared starts → apply user overrides
-/// → ExitInit → drain UpdateDiscreteStates`. Returns the final discrete-state
-/// update so the caller can seed time events from `next_event_time_defined`.
+/// constructors: `EnterInit → apply user overrides → ExitInit → drain
+/// UpdateDiscreteStates`. Returns the final discrete-state update so the caller
+/// can seed time events from `next_event_time_defined`.
+///
+/// The values declared in `modelDescription.xml` are deliberately *not* pushed
+/// back into the FMU. FMI 3.0 §2.4.7.5 is explicit that the FMU has already
+/// initialized its variables from those values at instantiation, so calling
+/// `fmi3Set{VariableType}` is "only necessary if a different value as stored in
+/// the XML file is desired" — which is precisely what `start_values` is for.
+/// Re-applying them is not just redundant: an FMU is free to reject a set on a
+/// variable it considers its own to compute, and PMSF's `DynamicArrayTest`
+/// answers a write to its `initial="exact"` output with `fmi3Error`.
+///
+/// `enters_event_mode` says which state `fmi3ExitInitializationMode` leaves the
+/// FMU in (FMI 3.0 §2.3.1): Model Exchange always lands in Event Mode, while
+/// Co-Simulation lands in Event Mode only when instantiated with
+/// `eventModeUsed=true` and in Step Mode otherwise. `fmi3UpdateDiscreteStates`
+/// is an Event Mode function, so draining it in Step Mode is a state-machine
+/// violation that a strict FMU answers with `fmi3Error` — which is exactly what
+/// PMSF's `SimpleVariableTest` (`hasEventMode="false"`) does.
 ///
 /// Ref: PathSim `blocks/fmu.py::_initialize`, Reference-FMUs
 /// `fmusim/FMI3MESimulation.c:53-96` and `FMI3CSSimulation.c:70-123`.
 fn run_initialization<K>(
     inst: &Instance<K>,
     md: &ModelDescription,
-    start_values: &Option<HashMap<String, f64>>,
+    start_values: &Option<HashMap<String, Vec<f64>>>,
+    already_applied: &[String],
     tolerance: Option<f64>,
-) -> Result<DiscreteStateUpdate> {
+    enters_event_mode: bool,
+) -> Result<Option<DiscreteStateUpdate>> {
     inst.enter_initialization_mode(tolerance, 0.0, None)?;
 
-    let (decl_vrs, decl_vals) = declared_float64_starts(md);
-    if !decl_vrs.is_empty() {
-        inst.set_float64(&decl_vrs, &decl_vals)?;
-    }
     if let Some(overrides) = start_values {
-        if !overrides.is_empty() {
-            let (vrs, vals) = collect_overrides(md, overrides)?;
-            if !vrs.is_empty() {
-                inst.set_float64(&vrs, &vals)?;
+        for (name, given) in overrides {
+            if already_applied.iter().any(|n| n == name) {
+                continue; // a structural parameter, set in Configuration Mode
             }
+            let v = md
+                .variable_by_name(name)
+                .ok_or_else(|| crate::fmi::FmiError::UnknownVariable(name.clone()))?;
+            let n = md.n_values(v);
+            if n == 0 {
+                continue; // array currently sized to zero elements
+            }
+            let values = expand_override(name, given, n)?;
+            set_variable_f64(inst, name, v, &values)?;
         }
     }
 
     inst.exit_initialization_mode()?;
-    drain_discrete_state_updates(inst)
+    if enters_event_mode {
+        drain_discrete_state_updates(inst).map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 // =========================================================================
@@ -158,9 +496,15 @@ fn run_initialization<K>(
 pub struct MeBackend {
     pub instance: Instance<Me>,
     pub md: ModelDescription,
-    pub input_vrs: Vec<fmi3ValueReference>,
-    pub output_vrs: Vec<fmi3ValueReference>,
+    /// Ports, grouped by FMI type. Every numeric type is widened to the block's
+    /// `f64` ports; see `PortLayout`.
+    pub inputs: PortLayout,
+    pub outputs: PortLayout,
     pub state_vrs: Vec<fmi3ValueReference>,
+    /// Flat element count behind `state_vrs`. Equal to `state_vrs.len()` unless
+    /// a state is an array, in which case the FMI call's `nValues` argument must
+    /// be the element count while `nValueReferences` stays the variable count.
+    pub n_state_values: usize,
     pub n_event_indicators: usize,
     /// Back-reference to the owning block, set after block construction.
     /// Used by `handle_event` to call `engine.set(x_new)` when the FMU
@@ -188,15 +532,25 @@ pub struct MeBackend {
     /// `state_vrs`. Captured once at construction so the `jac_dyn` closure
     /// has immediate access without hitting `ModelStructure`.
     pub state_deriv_vrs: Vec<fmi3ValueReference>,
+    /// Flat element count behind `state_deriv_vrs`; the length of the
+    /// `sensitivity` buffer `fmi3GetDirectionalDerivative` writes.
+    pub n_deriv_values: usize,
 }
 
 impl MeBackend {
-    fn apply_inputs(&self, u: &[f64]) -> Result<()> {
-        if self.input_vrs.is_empty() {
-            return Ok(());
-        }
-        let n = self.input_vrs.len().min(u.len());
-        self.instance.set_float64(&self.input_vrs[..n], &u[..n])
+    /// Latch the block's inputs into the FMU. A short `u` (block not fully
+    /// wired) leaves the remaining ports at zero.
+    fn apply_inputs(&mut self, u: &[f64]) {
+        let Self { instance, inputs, .. } = self;
+        inputs.write(instance, u);
+    }
+
+    /// Pull the FMU's outputs into `out`, sized to the port count.
+    fn read_outputs(&mut self, out: &mut Vec<f64>) {
+        let Self { instance, outputs, .. } = self;
+        out.clear();
+        out.resize(outputs.n_ports, 0.0);
+        outputs.read(instance, out);
     }
 
     /// Run the full event-handling sequence in response to a detected state
@@ -205,9 +559,21 @@ impl MeBackend {
     /// plus engine-state reset if `values_changed` and time-event insertion
     /// if `next_event_time_defined`.
     ///
-    /// Ref: `reference-fmus/fmusim/FMI3MESimulation.c:186-227` + PathSim
+    /// The FMU's time is advanced to the event time first. Without it the FMU
+    /// is still standing at the end of the last integrator step, which is
+    /// strictly before the event, so `UpdateDiscreteStates` performs no
+    /// transition and re-announces the same `nextEventTime` — the event then
+    /// repeats, `ScheduleList` sees no new entry and deactivates itself, and the
+    /// FMU's discrete state silently stops advancing. `Stair` shows this as a
+    /// counter frozen at 3.
+    ///
+    /// Ref: `reference-fmus/fmusim/FMI3MESimulation.c:186-227` (`FMI3SetTime`
+    /// before `FMI3EnterEventMode`) + PathSim
     /// `blocks/fmu.py::ModelExchangeFMU._handle_event`.
-    fn handle_event(&mut self) {
+    fn handle_event(&mut self, t: f64) {
+        if self.instance.set_time(t).is_err() {
+            return;
+        }
         if self.instance.enter_event_mode().is_err() {
             return;
         }
@@ -259,58 +625,54 @@ impl MeBackend {
 pub fn model_exchange_fmu(
     fmu_path: impl AsRef<Path>,
     instance_name: &str,
-    start_values: Option<HashMap<String, f64>>,
+    start_values: Option<HashMap<String, Vec<f64>>>,
     tolerance: f64,
     verbose: bool,
 ) -> Result<BlockRef> {
     // --- 1. extract + parse + instantiate ---
     let archive = FmuArchive::extract(fmu_path.as_ref())?;
-    let md = ModelDescription::from_file(archive.model_description())?;
+    let mut md = ModelDescription::from_file(archive.model_description())?;
     let inst = Instance::<Me>::new_model_exchange(archive, &md, instance_name, verbose)?;
 
-    // --- 2. shared init sequence + ME-specific transition to continuous time ---
-    let init_update = run_initialization(&inst, &md, &start_values, Some(tolerance))?;
+    // --- 2. structural parameters, then the shared init sequence, then the
+    // ME-specific transition to continuous time. Structural parameters go first
+    // because they decide the array shapes every later step depends on.
+    let structural = match &start_values {
+        Some(o) => apply_structural_overrides(&inst, &mut md, o)?,
+        None => Vec::new(),
+    };
+    // ME always exits initialization into Event Mode (FMI 3.0 §2.3.1), so the
+    // drain runs and the returned update is always `Some`.
+    let init_update =
+        run_initialization(&inst, &md, &start_values, &structural, Some(tolerance), true)?
+            .expect("Model Exchange always enters Event Mode after ExitInitializationMode");
     inst.enter_continuous_time_mode()?;
 
     // --- 3. discover port / state VRs ---
-    let input_vrs: Vec<_> = md
-        .inputs()
-        .filter(|v| v.var_type == VarType::Float64)
-        .map(|v| v.value_reference)
-        .collect();
-    let output_vrs: Vec<_> = md
-        .outputs()
-        .filter(|v| v.var_type == VarType::Float64)
-        .map(|v| v.value_reference)
-        .collect();
-    let state_vrs: Vec<_> = md
-        .continuous_states()
-        .iter()
-        .map(|v| v.value_reference)
-        .collect();
-    let state_deriv_vrs: Vec<_> = md
-        .model_structure
-        .continuous_state_derivatives
-        .clone();
+    let inputs = PortLayout::collect(&md, md.inputs());
+    let outputs = PortLayout::collect(&md, md.outputs());
+    let states = ValueLayout::collect(&md, md.continuous_states().into_iter());
+    let derivs = ValueLayout::collect(&md, md.continuous_state_derivatives());
     let n_event_indicators = md.n_event_indicators();
 
     // --- 4. initial state from FMU (post-init) via GetFloat64 on state VRs ---
-    let mut initial_state = vec![0.0; state_vrs.len()];
-    if !state_vrs.is_empty() {
-        inst.get_float64(&state_vrs, &mut initial_state)?;
+    let mut initial_state = vec![0.0; states.n_values];
+    if !states.is_empty() {
+        inst.get_float64(&states.vrs, &mut initial_state)?;
     }
 
     // --- 5. assemble backend + Block ---
     let ei_buf = vec![0.0; n_event_indicators];
-    let state_buf = vec![0.0; state_vrs.len()];
-    let jac_seed_buf = vec![0.0; state_vrs.len()];
-    let jac_col_buf = vec![0.0; state_vrs.len()];
+    let state_buf = vec![0.0; states.n_values];
+    let jac_seed_buf = vec![0.0; states.n_values];
+    let jac_col_buf = vec![0.0; states.n_values];
     let backend = Rc::new(FastCell::new(MeBackend {
         instance: inst,
         md,
-        input_vrs,
-        output_vrs,
-        state_vrs,
+        inputs,
+        outputs,
+        state_vrs: states.vrs,
+        n_state_values: states.n_values,
         n_event_indicators,
         block: None,
         time_events: None,
@@ -318,7 +680,8 @@ pub fn model_exchange_fmu(
         state_buf,
         jac_seed_buf,
         jac_col_buf,
-        state_deriv_vrs,
+        state_deriv_vrs: derivs.vrs,
+        n_deriv_values: derivs.n_values,
     }));
 
     let mut b = Block::default_block();
@@ -330,8 +693,9 @@ pub fn model_exchange_fmu(
     b.initial_value = Some(initial_state.clone());
     b.engine = Some(crate::solvers::solver::Solver::with_defaults(&initial_state));
 
-    let n_in = { backend.borrow().input_vrs.len() };
-    let n_out = { backend.borrow().output_vrs.len() };
+    // One port per flat element, so an array port exposes all of its elements.
+    let n_in = { backend.borrow().inputs.n_ports };
+    let n_out = { backend.borrow().outputs.n_ports };
     b.inputs = Register::new(Some(n_in), None);
     b.outputs = Register::new(Some(n_out), None);
 
@@ -343,8 +707,8 @@ pub fn model_exchange_fmu(
         if !backend.state_vrs.is_empty() {
             let _ = backend.instance.set_continuous_states(x);
         }
-        let _ = backend.apply_inputs(u);
-        let n = backend.state_vrs.len();
+        backend.apply_inputs(u);
+        let n = backend.n_state_values;
         out.resize(n, 0.0);
         if n > 0 {
             let _ = backend.instance.get_continuous_state_derivatives(out);
@@ -359,12 +723,8 @@ pub fn model_exchange_fmu(
         if !backend.state_vrs.is_empty() {
             let _ = backend.instance.set_continuous_states(x);
         }
-        let _ = backend.apply_inputs(u);
-        let n_out = backend.output_vrs.len();
-        out.resize(n_out, 0.0);
-        if n_out > 0 {
-            let _ = backend.instance.get_float64(&backend.output_vrs, out);
-        }
+        backend.apply_inputs(u);
+        backend.read_outputs(out);
     }));
 
     // jac_dyn: if the FMU advertises `providesDirectionalDerivatives` AND
@@ -384,8 +744,11 @@ pub fn model_exchange_fmu(
             be.md.model_exchange.as_ref()
                 .map(|me| me.provides_directional_derivatives).unwrap_or(false),
             be.instance.supports_directional_derivatives(),
-            be.state_vrs.len(),
-            be.state_deriv_vrs.len() == be.state_vrs.len(),
+            be.n_state_values,
+            // The Jacobian is square only if the derivative block has as many
+            // flat elements as the state block — the natural case, but worth
+            // checking before indexing `out[i * n + j]`.
+            be.n_deriv_values == be.n_state_values,
         )
     };
     if provides_dd && has_dd_symbol && n_states > 0 && derivs_match {
@@ -394,8 +757,8 @@ pub fn model_exchange_fmu(
             let backend = be.borrow_mut();
             let _ = backend.instance.set_time(t);
             let _ = backend.instance.set_continuous_states(x);
-            let _ = backend.apply_inputs(u);
-            let n = backend.state_vrs.len();
+            backend.apply_inputs(u);
+            let n = backend.n_state_values;
             out.clear();
             out.resize(n * n, 0.0);
             if n == 0 { return; }
@@ -432,7 +795,7 @@ pub fn model_exchange_fmu(
     {
         let be = backend.clone();
         time_events.borrow_mut().func_act =
-            Some(Box::new(move |_t| be.borrow_mut().handle_event()));
+            Some(Box::new(move |t| be.borrow_mut().handle_event(t)));
     }
 
     // Close the back-references so `handle_event` can reach the block's
@@ -473,7 +836,7 @@ pub fn model_exchange_fmu(
         };
 
         let be_act = backend.clone();
-        let func_act = Box::new(move |_t: f64| be_act.borrow_mut().handle_event());
+        let func_act = Box::new(move |t: f64| be_act.borrow_mut().handle_event(t));
 
         let zc = crate::events::zerocrossing::ZeroCrossing::new(
             func_evt,
@@ -496,10 +859,10 @@ pub fn model_exchange_fmu(
         .unwrap_or(true);
     if needs_cis {
         let be_sample = backend.clone();
-        blk_ref.borrow_mut().sample_fn = Some(Box::new(move |_blk, _t, _dt| {
+        blk_ref.borrow_mut().sample_fn = Some(Box::new(move |_blk, t, _dt| {
             let be = be_sample.borrow_mut();
             match be.instance.completed_integrator_step(true) {
-                Ok(r) if r.enter_event_mode => be.handle_event(),
+                Ok(r) if r.enter_event_mode => be.handle_event(t),
                 _ => {}
             }
         }));
@@ -512,15 +875,33 @@ pub fn model_exchange_fmu(
 // CoSimulationFMU
 // =========================================================================
 
+/// An output variable that supplies Taylor derivatives.
+///
+/// `fmi3GetOutputDerivatives` is requested per value reference and returns all
+/// of that variable's elements at once, so the correction works in units of
+/// variables while the block's ports are units of elements. This carries the
+/// mapping between the two. Only floating-point outputs that declare
+/// `maxOutputDerivativeOrder > 0` appear here.
+pub struct OutputVar {
+    pub vr: fmi3ValueReference,
+    /// Port index of this variable's first element.
+    pub offset: usize,
+    /// Number of elements it occupies (1 for a scalar).
+    pub n_values: usize,
+    /// Its declared `maxOutputDerivativeOrder`, always at least 1.
+    pub max_order: u32,
+}
+
 pub struct CsBackend {
     pub instance: Instance<Cs>,
     pub md: ModelDescription,
-    pub input_vrs: Vec<fmi3ValueReference>,
-    pub output_vrs: Vec<fmi3ValueReference>,
-    /// `maxOutputDerivativeOrder` per output (same indexing as `output_vrs`).
-    /// Used to decide whether to Taylor-interpolate outputs at block times
-    /// between FMU communication points.
-    pub output_max_orders: Vec<u32>,
+    /// Ports, grouped by FMI type; every numeric type is widened to the block's
+    /// `f64` ports (see `PortLayout`).
+    pub inputs: PortLayout,
+    pub outputs: PortLayout,
+    /// The outputs that carry Taylor derivatives, used to interpolate at block
+    /// times between FMU communication points. Empty for most FMUs.
+    pub taylor_vars: Vec<OutputVar>,
     pub dt: f64,
     /// Whether the FMU was instantiated with `eventModeUsed = true`. Drives
     /// post-init transition and in-step event handling.
@@ -538,20 +919,22 @@ pub struct CsBackend {
     pub current_time: f64,
 
     // ----- hot-path scratch buffers (sized at construction) --------------
-    /// Block inputs flattened into a Vec<f64>, handed to `SetFloat64` in
-    /// `update_fn`.
+    /// Block inputs gathered from the input register before being handed to
+    /// `PortLayout::write`.
     pub input_buf: Vec<f64>,
-    /// FMU outputs read via `GetFloat64` and optionally Taylor-extrapolated
+    /// FMU outputs read through `PortLayout` and optionally Taylor-extrapolated
     /// in `update_fn`.
     pub output_buf: Vec<f64>,
-    /// Indices into `output_vrs` whose declared `maxOutputDerivativeOrder`
+    /// Indices into `taylor_vars` whose declared `maxOutputDerivativeOrder`
     /// reaches the current Taylor order; rebuilt in-place each call.
     pub taylor_idx: Vec<usize>,
-    /// `output_vrs` subset for the current Taylor order.
+    /// Value references of that subset, in the same order.
     pub taylor_vrs: Vec<fmi3ValueReference>,
-    /// Order vector passed to `GetOutputDerivatives` (all entries identical).
+    /// Order vector passed to `GetOutputDerivatives`, one entry per value
+    /// reference (all entries identical within a call).
     pub taylor_orders: Vec<i32>,
-    /// Derivative values returned by `GetOutputDerivatives`.
+    /// Derivative values returned by `GetOutputDerivatives` — the flat
+    /// concatenation of the selected variables' elements.
     pub taylor_deriv: Vec<f64>,
 }
 
@@ -590,13 +973,13 @@ impl CsBackend {
 pub fn cosimulation_fmu(
     fmu_path: impl AsRef<Path>,
     instance_name: &str,
-    start_values: Option<HashMap<String, f64>>,
+    start_values: Option<HashMap<String, Vec<f64>>>,
     dt: Option<f64>,
     verbose: bool,
 ) -> Result<BlockRef> {
     // --- 1. extract + parse ---
     let archive = FmuArchive::extract(fmu_path.as_ref())?;
-    let md = ModelDescription::from_file(archive.model_description())?;
+    let mut md = ModelDescription::from_file(archive.model_description())?;
 
     // Communication step: explicit dt overrides DefaultExperiment.stepSize.
     let dt = dt.or(md.default_experiment.step_size).ok_or_else(|| {
@@ -627,39 +1010,58 @@ pub fn cosimulation_fmu(
         early_return_allowed,
         verbose,
     )?;
-    let _init_update = run_initialization(&inst, &md, &start_values, Some(FMI_INITIALIZATION_TOL))?;
-
     // After ExitInit the FMU is in Event Mode if `event_mode_used`, else in
-    // Step Mode (FMI 3.0 §4.2.5). When in Event Mode, `run_initialization`
-    // already drained discrete states — we only need the explicit transition.
-    // Ref: reference-fmus/fmusim/FMI3CSSimulation.c:103-122.
+    // Step Mode (FMI 3.0 §2.3.1). `run_initialization` drains discrete states
+    // only in the former case; here we add the explicit transition back to
+    // Step Mode. Ref: reference-fmus/fmusim/FMI3CSSimulation.c:103-122.
+    let structural = match &start_values {
+        Some(o) => apply_structural_overrides(&inst, &mut md, o)?,
+        None => Vec::new(),
+    };
+    let _init_update = run_initialization(
+        &inst,
+        &md,
+        &start_values,
+        &structural,
+        Some(FMI_INITIALIZATION_TOL),
+        event_mode_used,
+    )?;
     if event_mode_used {
         inst.enter_step_mode()?;
     }
 
     // --- 4. port discovery ---
-    let input_vrs: Vec<_> = md
-        .inputs()
-        .filter(|v| v.var_type == VarType::Float64)
-        .map(|v| v.value_reference)
-        .collect();
-    let outputs_f64: Vec<_> = md
+    let inputs = PortLayout::collect(&md, md.inputs());
+    let outputs = PortLayout::collect(&md, md.outputs());
+    // Taylor interpolation applies only to floating-point outputs that declare
+    // derivatives; `fmi3GetOutputDerivatives` returns `fmi3Float64` values and
+    // has no meaning for the integer and boolean ports.
+    let taylor_vars: Vec<OutputVar> = md
         .outputs()
-        .filter(|v| v.var_type == VarType::Float64)
+        .filter(|v| {
+            matches!(v.var_type, VarType::Float64 | VarType::Float32)
+                && v.max_output_derivative_order > 0
+        })
+        .filter_map(|v| {
+            outputs.locate(v.value_reference).map(|(offset, n_values)| OutputVar {
+                vr: v.value_reference,
+                offset,
+                n_values,
+                max_order: v.max_output_derivative_order,
+            })
+        })
         .collect();
-    let output_vrs: Vec<_> = outputs_f64.iter().map(|v| v.value_reference).collect();
-    let output_max_orders: Vec<u32> =
-        outputs_f64.iter().map(|v| v.max_output_derivative_order).collect();
 
-    // --- 5. assemble backend + Block ---
-    let n_in = input_vrs.len();
-    let n_out = output_vrs.len();
+    // --- 5. assemble backend + Block: one port per flat element ---
+    let n_in = inputs.n_ports;
+    let n_out = outputs.n_ports;
+    let n_taylor = taylor_vars.len();
     let backend = Rc::new(FastCell::new(CsBackend {
         instance: inst,
         md,
-        input_vrs,
-        output_vrs,
-        output_max_orders,
+        inputs,
+        outputs,
+        taylor_vars,
         dt,
         event_mode_used,
         early_return_allowed,
@@ -667,10 +1069,11 @@ pub fn cosimulation_fmu(
         current_time: 0.0,
         input_buf: vec![0.0; n_in],
         output_buf: vec![0.0; n_out],
-        // Taylor scratch: worst case every output contributes at every order.
-        taylor_idx: Vec::with_capacity(n_out),
-        taylor_vrs: Vec::with_capacity(n_out),
-        taylor_orders: Vec::with_capacity(n_out),
+        // Taylor scratch: worst case every derivative-carrying output
+        // contributes at every order.
+        taylor_idx: Vec::with_capacity(n_taylor),
+        taylor_vrs: Vec::with_capacity(n_taylor),
+        taylor_orders: Vec::with_capacity(n_taylor),
         taylor_deriv: Vec::with_capacity(n_out),
     }));
 
@@ -687,11 +1090,10 @@ pub fn cosimulation_fmu(
     // backend's pre-allocated output_buf.
     {
         let backend = backend.borrow_mut();
-        if !backend.output_vrs.is_empty() {
-            let _ = backend
-                .instance
-                .get_float64(&backend.output_vrs, &mut backend.output_buf);
-            for (i, v) in backend.output_buf.iter().enumerate() {
+        if !backend.outputs.is_empty() {
+            let CsBackend { instance, outputs, output_buf, .. } = &mut *backend;
+            outputs.read(instance, output_buf);
+            for (i, v) in output_buf.iter().enumerate() {
                 b.outputs.set_single(i, *v);
             }
         }
@@ -778,25 +1180,30 @@ pub fn cosimulation_fmu(
         }
 
         // --- inputs: block register → FMU (reuses input_buf) ---
-        if !backend.input_vrs.is_empty() {
-            for i in 0..backend.input_vrs.len() {
+        if !backend.inputs.is_empty() {
+            for i in 0..backend.input_buf.len() {
                 backend.input_buf[i] = blk.inputs.get_single(i);
             }
-            let _ = backend
-                .instance
-                .set_float64(&backend.input_vrs, &backend.input_buf);
+            let CsBackend { instance, inputs, input_buf, .. } = &mut *backend;
+            inputs.write(instance, input_buf);
         }
-        if backend.output_vrs.is_empty() {
+        if backend.outputs.is_empty() {
             return;
         }
 
         // --- outputs: FMU → output_buf (zero-alloc) ---
-        let _ = backend
-            .instance
-            .get_float64(&backend.output_vrs, &mut backend.output_buf);
+        {
+            let CsBackend { instance, outputs, output_buf, .. } = &mut *backend;
+            outputs.read(instance, output_buf);
+        }
 
         // --- Taylor interpolation (only if any output declares derivatives) ---
-        let max_order_global = *backend.output_max_orders.iter().max().unwrap_or(&0);
+        let max_order_global = backend
+            .taylor_vars
+            .iter()
+            .map(|o| o.max_order)
+            .max()
+            .unwrap_or(0);
         let dt_offset = t - backend.current_time;
         if max_order_global > 0 && dt_offset > crate::constants::TOLERANCE {
             let mut factorial: f64 = 1.0;
@@ -804,23 +1211,28 @@ pub fn cosimulation_fmu(
                 factorial *= order as f64;
                 let factor = dt_offset.powi(order as i32) / factorial;
 
-                // Refill the scratch lists in place for this order.
+                // Refill the scratch lists in place for this order. Selection is
+                // per variable — a variable's declared order covers all of its
+                // elements.
                 backend.taylor_idx.clear();
                 backend.taylor_vrs.clear();
-                for (i, &m) in backend.output_max_orders.iter().enumerate() {
-                    if m >= order {
+                let mut n_deriv_values = 0usize;
+                for (i, o) in backend.taylor_vars.iter().enumerate() {
+                    if o.max_order >= order {
                         backend.taylor_idx.push(i);
-                        backend.taylor_vrs.push(backend.output_vrs[i]);
+                        backend.taylor_vrs.push(o.vr);
+                        n_deriv_values += o.n_values;
                     }
                 }
                 if backend.taylor_idx.is_empty() {
                     break;
                 }
-                let n = backend.taylor_idx.len();
                 backend.taylor_orders.clear();
-                backend.taylor_orders.resize(n, order as i32);
+                backend
+                    .taylor_orders
+                    .resize(backend.taylor_vrs.len(), order as i32);
                 backend.taylor_deriv.clear();
-                backend.taylor_deriv.resize(n, 0.0);
+                backend.taylor_deriv.resize(n_deriv_values, 0.0);
 
                 // Split-borrow: `instance` is read-only; the three taylor_*
                 // slices alias disjoint fields on self.
@@ -835,9 +1247,16 @@ pub fn cosimulation_fmu(
                 {
                     break;
                 }
-                for k in 0..n {
-                    let i = backend.taylor_idx[k];
-                    backend.output_buf[i] += backend.taylor_deriv[k] * factor;
+                // Scatter the flat derivative block back to each variable's
+                // slice of `output_buf`.
+                let mut src = 0usize;
+                for &i in &backend.taylor_idx {
+                    let o = &backend.taylor_vars[i];
+                    for k in 0..o.n_values {
+                        backend.output_buf[o.offset + k] +=
+                            backend.taylor_deriv[src + k] * factor;
+                    }
+                    src += o.n_values;
                 }
             }
         }

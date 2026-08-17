@@ -10,6 +10,34 @@ use crate::fmi::FmiError;
 
 use super::PyBlock;
 
+/// A `start_values` entry: either one value for the whole variable, or one per
+/// array element. PyO3 tries the variants in order, so a Python float takes the
+/// scalar path and any sequence of floats the vector path.
+///
+/// A scalar given for an array variable is broadcast across its elements, the
+/// same rule FMI 3.0 §2.4.7.5 applies to the XML's own `start` attribute.
+#[derive(FromPyObject)]
+pub(super) enum StartOverride {
+    Scalar(f64),
+    Vector(Vec<f64>),
+}
+
+impl From<StartOverride> for Vec<f64> {
+    fn from(o: StartOverride) -> Self {
+        match o {
+            StartOverride::Scalar(x) => vec![x],
+            StartOverride::Vector(v) => v,
+        }
+    }
+}
+
+/// Normalize the Python-facing map to the core's `name -> values` form.
+fn to_start_values(
+    m: Option<HashMap<String, StartOverride>>,
+) -> Option<HashMap<String, Vec<f64>>> {
+    m.map(|m| m.into_iter().map(|(k, v)| (k, v.into())).collect())
+}
+
 fn fmi_err_to_py(e: FmiError) -> PyErr {
     match e {
         FmiError::UnknownVariable(_) => PyValueError::new_err(e.to_string()),
@@ -33,9 +61,12 @@ fn fmi_err_to_py(e: FmiError) -> PyErr {
 ///     Path to the `.fmu` archive.
 /// instance_name : str, optional
 ///     Name passed to `fmi3InstantiateModelExchange` (default: "fmu_instance").
-/// start_values : dict[str, float], optional
+/// start_values : dict[str, float | Sequence[float]], optional
 ///     Override start values for variables declared in `modelDescription.xml`.
-///     Keys are variable names; values are floats (Float64-typed variables only).
+///     Keys are variable names (Float64-typed variables only). A float sets the
+///     variable, and for an array variable it is broadcast across every element.
+///     A sequence sets the elements individually and must have exactly as many
+///     entries as the array has elements.
 /// tolerance : float, optional
 ///     Event-detection tolerance and `toleranceDefined` argument to
 ///     `fmi3EnterInitializationMode` (default: 1e-10).
@@ -54,11 +85,17 @@ fn fmi_err_to_py(e: FmiError) -> PyErr {
 pub(super) fn ModelExchangeFMU(
     fmu_path: &str,
     instance_name: &str,
-    start_values: Option<HashMap<String, f64>>,
+    start_values: Option<HashMap<String, StartOverride>>,
     tolerance: f64,
     verbose: bool,
 ) -> PyResult<PyBlock> {
-    let blk = model_exchange_fmu(fmu_path, instance_name, start_values, tolerance, verbose)
+    let blk = model_exchange_fmu(
+        fmu_path,
+        instance_name,
+        to_start_values(start_values),
+        tolerance,
+        verbose,
+    )
         .map_err(fmi_err_to_py)?;
     Ok(PyBlock::wrap(blk))
 }
@@ -76,8 +113,10 @@ pub(super) fn ModelExchangeFMU(
 ///     Path to the `.fmu` archive.
 /// instance_name : str, optional
 ///     Name passed to `fmi3InstantiateCoSimulation` (default: "fmu_instance").
-/// start_values : dict[str, float], optional
+/// start_values : dict[str, float | Sequence[float]], optional
 ///     Override start values for variables declared in `modelDescription.xml`.
+///     A float is broadcast across an array variable's elements; a sequence sets
+///     them individually.
 /// dt : float, optional
 ///     Communication step size. If `None`, `DefaultExperiment.stepSize` from
 ///     the FMU is used; an error is raised if neither is available.
@@ -96,11 +135,17 @@ pub(super) fn ModelExchangeFMU(
 pub(super) fn CoSimulationFMU(
     fmu_path: &str,
     instance_name: &str,
-    start_values: Option<HashMap<String, f64>>,
+    start_values: Option<HashMap<String, StartOverride>>,
     dt: Option<f64>,
     verbose: bool,
 ) -> PyResult<PyBlock> {
-    let blk = cosimulation_fmu(fmu_path, instance_name, start_values, dt, verbose)
+    let blk = cosimulation_fmu(
+        fmu_path,
+        instance_name,
+        to_start_values(start_values),
+        dt,
+        verbose,
+    )
         .map_err(fmi_err_to_py)?;
     Ok(PyBlock::wrap(blk))
 }

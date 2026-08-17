@@ -131,6 +131,22 @@ impl Initial {
     }
 }
 
+// --- array dimensions -------------------------------------------------------
+
+/// One dimension of an array variable (FMI 3.0 §2.4.7.4). A `<Dimension>`
+/// element carries exactly one of the two attributes, never both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dimension {
+    /// `<Dimension start="N"/>` — a constant size baked into the XML.
+    Fixed(u64),
+    /// `<Dimension valueReference="vr"/>` — the size is the current value of the
+    /// `UInt64` variable with this value reference, which the spec requires to
+    /// be either a constant or a structural parameter. Structural parameters can
+    /// be changed in Configuration Mode, so this size is not fixed at parse time
+    /// — resolve it through `ModelDescription::dimension_size`.
+    Referenced(fmi3ValueReference),
+}
+
 // --- variable ---------------------------------------------------------------
 
 #[derive(Debug, Clone)]
@@ -150,22 +166,164 @@ pub struct Variable {
     /// `fmi3GetOutputDerivatives` (FMI 3.0 §2.4.7.5). 0 means no derivatives
     /// are provided. Applies to output variables.
     pub max_output_derivative_order: u32,
+    /// Array shape. Empty for a scalar; one entry per `<Dimension>` element
+    /// otherwise. The number of values the variable occupies in `fmi3Get*` /
+    /// `fmi3Set*` is the product of the dimension sizes — see
+    /// `ModelDescription::n_values`.
+    pub dimensions: Vec<Dimension>,
 }
 
-#[derive(Debug, Clone)]
+impl Variable {
+    /// A scalar variable with no start value, no derivative link and no output
+    /// derivatives — the shape the exporter emits. Callers override the
+    /// remaining fields with struct-update syntax, which keeps them compiling
+    /// when new optional fields are added here.
+    pub fn scalar(
+        name: impl Into<String>,
+        value_reference: fmi3ValueReference,
+        var_type: VarType,
+        causality: Causality,
+        variability: Variability,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            value_reference,
+            var_type,
+            causality,
+            variability,
+            initial: None,
+            description: None,
+            start: None,
+            derivative_of: None,
+            max_output_derivative_order: 0,
+            dimensions: Vec::new(),
+        }
+    }
+
+    /// True when the variable declares at least one `<Dimension>`.
+    pub fn is_array(&self) -> bool {
+        !self.dimensions.is_empty()
+    }
+}
+
+/// A variable's declared start values.
+///
+/// Every FMI 3.0 variable is potentially an array, so each variant carries a
+/// list. A scalar is the one-element case. Per FMI 3.0 §2.4.7.5 the `start`
+/// attribute of an array may also hold a *single* value, which then applies to
+/// every element — `expand_*` implements that broadcast.
+#[derive(Debug, Clone, PartialEq)]
 pub enum StartValue {
-    Float64(f64),
-    Int64(i64),
-    Boolean(bool),
-    String(String),
+    Float64(Vec<f64>),
+    Int64(Vec<i64>),
+    Boolean(Vec<bool>),
+    String(Vec<String>),
+    /// Raw bytes per element, decoded from the hex-encoded `<Start value=".."/>`
+    /// children of a `<Binary>` variable.
+    Binary(Vec<Vec<u8>>),
+}
+
+/// Apply the FMI 3.0 broadcast rule: a single declared value fills the whole
+/// array; otherwise the list is used as-is, padded with its last element (or
+/// truncated) so the caller always gets exactly `n`.
+fn expand<T: Clone + Default>(values: &[T], n: usize) -> Vec<T> {
+    match values.len() {
+        0 => vec![T::default(); n],
+        1 => vec![values[0].clone(); n],
+        len if len >= n => values[..n].to_vec(),
+        _ => {
+            let mut out = values.to_vec();
+            let last = out.last().cloned().unwrap_or_default();
+            out.resize(n, last);
+            out
+        }
+    }
 }
 
 impl StartValue {
+    pub fn scalar_f64(v: f64) -> Self {
+        Self::Float64(vec![v])
+    }
+
+    /// Number of declared values. Note this is the count in the XML, which for a
+    /// broadcast array start is 1 regardless of the array's size.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Float64(v) => v.len(),
+            Self::Int64(v) => v.len(),
+            Self::Boolean(v) => v.len(),
+            Self::String(v) => v.len(),
+            Self::Binary(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The first declared value as an `f64`, for scalar consumers.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
-            Self::Float64(v) => Some(*v),
-            Self::Int64(v) => Some(*v as f64),
-            Self::Boolean(v) => Some(if *v { 1.0 } else { 0.0 }),
+            Self::Float64(v) => v.first().copied(),
+            Self::Int64(v) => v.first().map(|x| *x as f64),
+            Self::Boolean(v) => v.first().map(|b| if *b { 1.0 } else { 0.0 }),
+            _ => None,
+        }
+    }
+
+    /// The first declared value as a `u64`, for array dimension sizes.
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Self::Int64(v) => v.first().and_then(|x| u64::try_from(*x).ok()),
+            Self::Float64(v) => v.first().map(|x| *x as u64),
+            _ => None,
+        }
+    }
+
+    /// `n` float values, converting from the integer and boolean variants so a
+    /// caller driving `fmi3SetFloat64` can accept any numeric declaration.
+    pub fn expand_f64(&self, n: usize) -> Option<Vec<f64>> {
+        match self {
+            Self::Float64(v) => Some(expand(v, n)),
+            Self::Int64(v) => Some(expand(v, n).into_iter().map(|x| x as f64).collect()),
+            Self::Boolean(v) => Some(
+                expand(v, n)
+                    .into_iter()
+                    .map(|b| if b { 1.0 } else { 0.0 })
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
+    pub fn expand_i64(&self, n: usize) -> Option<Vec<i64>> {
+        match self {
+            Self::Int64(v) => Some(expand(v, n)),
+            Self::Boolean(v) => Some(expand(v, n).into_iter().map(i64::from).collect()),
+            Self::Float64(v) => Some(expand(v, n).into_iter().map(|x| x as i64).collect()),
+            _ => None,
+        }
+    }
+
+    pub fn expand_bool(&self, n: usize) -> Option<Vec<bool>> {
+        match self {
+            Self::Boolean(v) => Some(expand(v, n)),
+            Self::Int64(v) => Some(expand(v, n).into_iter().map(|x| x != 0).collect()),
+            Self::Float64(v) => Some(expand(v, n).into_iter().map(|x| x != 0.0).collect()),
+            _ => None,
+        }
+    }
+
+    pub fn expand_string(&self, n: usize) -> Option<Vec<String>> {
+        match self {
+            Self::String(v) => Some(expand(v, n)),
+            _ => None,
+        }
+    }
+
+    pub fn expand_binary(&self, n: usize) -> Option<Vec<Vec<u8>>> {
+        match self {
+            Self::Binary(v) => Some(expand(v, n)),
             _ => None,
         }
     }
@@ -230,6 +388,29 @@ pub struct ModelDescription {
 
     name_to_index: HashMap<String, usize>,
     vr_to_index: HashMap<fmi3ValueReference, usize>,
+    /// Current size contributed by every `UInt64` variable that a
+    /// `<Dimension valueReference=".."/>` may point at, seeded from the `start`
+    /// attributes. Kept separate from `variables` because structural parameters
+    /// are mutable: `set_dimension_size` records a Configuration Mode override
+    /// so `n_values` keeps reporting the FMU's live array shape.
+    dimension_sizes: HashMap<fmi3ValueReference, u64>,
+}
+
+/// Seed the dimension-size table from the declared starts of every `UInt64`
+/// variable that could serve as an array bound (FMI 3.0 §2.4.7.4 restricts
+/// those to constants and structural parameters, but indexing every `UInt64`
+/// costs nothing and tolerates FMUs that stretch the rule).
+fn seed_dimension_sizes(variables: &[Variable]) -> HashMap<fmi3ValueReference, u64> {
+    variables
+        .iter()
+        .filter(|v| v.var_type == VarType::UInt64)
+        .filter_map(|v| {
+            v.start
+                .as_ref()
+                .and_then(|s| s.as_u64())
+                .map(|n| (v.value_reference, n))
+        })
+        .collect()
 }
 
 impl ModelDescription {
@@ -252,6 +433,7 @@ impl ModelDescription {
             name_to_index.insert(v.name.clone(), i);
             vr_to_index.insert(v.value_reference, i);
         }
+        let dimension_sizes = seed_dimension_sizes(&variables);
         Self {
             fmi_version: "3.0".to_owned(),
             model_name: model_name.into(),
@@ -265,6 +447,7 @@ impl ModelDescription {
             model_structure,
             name_to_index,
             vr_to_index,
+            dimension_sizes,
         }
     }
 
@@ -317,6 +500,7 @@ impl ModelDescription {
             name_to_index.insert(v.name.clone(), i);
             vr_to_index.insert(v.value_reference, i);
         }
+        let dimension_sizes = seed_dimension_sizes(&variables);
 
         Ok(Self {
             fmi_version,
@@ -331,6 +515,7 @@ impl ModelDescription {
             model_structure,
             name_to_index,
             vr_to_index,
+            dimension_sizes,
         })
     }
 
@@ -342,6 +527,54 @@ impl ModelDescription {
 
     pub fn variable_by_vr(&self, vr: fmi3ValueReference) -> Option<&Variable> {
         self.vr_to_index.get(&vr).map(|&i| &self.variables[i])
+    }
+
+    // --- array shape -------------------------------------------------------
+
+    /// Resolve one dimension to its current size. A `Referenced` dimension whose
+    /// target carries no start value is malformed XML — the spec requires those
+    /// starts to exist and be positive (§2.4.7.4) — so we fall back to 1, which
+    /// degrades an unparseable array to a scalar instead of silently reporting
+    /// zero elements and skipping it everywhere.
+    pub fn dimension_size(&self, d: Dimension) -> u64 {
+        match d {
+            Dimension::Fixed(n) => n,
+            Dimension::Referenced(vr) => self.dimension_sizes.get(&vr).copied().unwrap_or(1),
+        }
+    }
+
+    /// The number of values a variable occupies in `fmi3Get*` / `fmi3Set*`: the
+    /// product of its dimension sizes, and 1 for a scalar (the empty product).
+    /// This is the per-VR contribution to the `nValues` argument, which is why
+    /// `nValues` and `nValueReferences` differ for arrays. A dimension resized
+    /// to zero yields zero, which the spec permits (§2.4.7.4).
+    pub fn n_values(&self, v: &Variable) -> usize {
+        v.dimensions
+            .iter()
+            .map(|&d| self.dimension_size(d) as usize)
+            .product()
+    }
+
+    /// Total `nValues` across a set of variables, i.e. the length of the flat
+    /// value buffer that a single `fmi3Get*`/`fmi3Set*` call over their value
+    /// references reads or writes.
+    pub fn total_n_values<'a>(&self, vars: impl Iterator<Item = &'a Variable>) -> usize {
+        vars.map(|v| self.n_values(v)).sum()
+    }
+
+    /// Record a new size for a `UInt64` variable used as an array bound, after
+    /// the importer has pushed it into the FMU through Configuration Mode.
+    /// Subsequent `n_values` calls reflect the new shape.
+    pub fn set_dimension_size(&mut self, vr: fmi3ValueReference, size: u64) {
+        self.dimension_sizes.insert(vr, size);
+    }
+
+    /// Structural parameters, in declaration order. These are the variables an
+    /// importer may change in Configuration Mode to resize arrays.
+    pub fn structural_parameters(&self) -> impl Iterator<Item = &Variable> {
+        self.variables
+            .iter()
+            .filter(|v| v.causality == Causality::StructuralParameter)
     }
 
     // --- convenience filters (pre-filtered once, iterated many times) ------
@@ -489,13 +722,49 @@ impl ModelDescription {
                     v.max_output_derivative_order
                 ));
             }
+            // `<String>` and `<Binary>` carry their starts as child elements,
+            // never as an attribute (FMI 3.0 §2.4.7.5).
+            let start_as_children =
+                matches!(v.var_type, VarType::String | VarType::Binary);
             if let Some(start) = &v.start {
-                s.push_str(&format!(" start=\"{}\"", fmt_start(start)));
+                if !start_as_children {
+                    s.push_str(&format!(" start=\"{}\"", fmt_start(start)));
+                }
             }
             if let Some(d) = &v.description {
                 s.push_str(&format!(" description=\"{}\"", xml_escape(d)));
             }
-            s.push_str("/>\n");
+
+            let start_children: Vec<String> = match (&v.start, start_as_children) {
+                (Some(StartValue::String(items)), true) => items
+                    .iter()
+                    .map(|t| format!("<Start value=\"{}\"/>", xml_escape(t)))
+                    .collect(),
+                (Some(StartValue::Binary(items)), true) => items
+                    .iter()
+                    .map(|b| format!("<Start value=\"{}\"/>", to_hex(b)))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            if v.dimensions.is_empty() && start_children.is_empty() {
+                s.push_str("/>\n");
+                continue;
+            }
+            s.push_str(">\n");
+            for d in &v.dimensions {
+                match d {
+                    Dimension::Fixed(n) => {
+                        s.push_str(&format!("      <Dimension start=\"{n}\"/>\n"))
+                    }
+                    Dimension::Referenced(vr) => {
+                        s.push_str(&format!("      <Dimension valueReference=\"{vr}\"/>\n"))
+                    }
+                }
+            }
+            for child in &start_children {
+                s.push_str(&format!("      {child}\n"));
+            }
+            s.push_str(&format!("    </{}>\n", var_type_to_tag(v.var_type)));
         }
         s.push_str("  </ModelVariables>\n");
 
@@ -530,12 +799,19 @@ fn fmt_f64(v: f64) -> String {
     format!("{}", v)
 }
 
+/// The `start` attribute value: a whitespace-separated list, which collapses to
+/// a plain scalar for the single-element case. Only reached for the numeric and
+/// boolean types — `<String>` and `<Binary>` starts are emitted as children.
 fn fmt_start(start: &StartValue) -> String {
+    fn join<T>(items: &[T], f: impl Fn(&T) -> String) -> String {
+        items.iter().map(f).collect::<Vec<_>>().join(" ")
+    }
     match start {
-        StartValue::Float64(v) => fmt_f64(*v),
-        StartValue::Int64(v) => v.to_string(),
-        StartValue::Boolean(v) => v.to_string(),
-        StartValue::String(s) => xml_escape(s),
+        StartValue::Float64(v) => join(v, |x| fmt_f64(*x)),
+        StartValue::Int64(v) => join(v, |x| x.to_string()),
+        StartValue::Boolean(v) => join(v, |x| x.to_string()),
+        StartValue::String(v) => join(v, |x| xml_escape(x)),
+        StartValue::Binary(v) => join(v, |x| to_hex(x)),
     }
 }
 
@@ -551,7 +827,7 @@ fn required_attr<'a>(n: Node<'a, 'a>, name: &str) -> Result<&'a str> {
 }
 
 fn parse_bool_attr(n: Node, name: &str) -> bool {
-    n.attribute(name) == Some("true")
+    n.attribute(name).map(parse_xs_bool).unwrap_or(false)
 }
 
 fn parse_f64_attr(n: Node, name: &str) -> Option<f64> {
@@ -683,6 +959,7 @@ fn parse_variables(n: Node) -> Result<Vec<Variable>> {
             .attribute("maxOutputDerivativeOrder")
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
+        let dimensions = parse_dimensions(v);
 
         out.push(Variable {
             name,
@@ -695,15 +972,91 @@ fn parse_variables(n: Node) -> Result<Vec<Variable>> {
             start,
             derivative_of,
             max_output_derivative_order,
+            dimensions,
         });
     }
     Ok(out)
 }
 
+/// `<Dimension start="N"/>` / `<Dimension valueReference="vr"/>` children, in
+/// document order (FMI 3.0 §2.4.7.4). Elements carrying neither attribute are
+/// malformed and skipped rather than treated as size 0.
+fn parse_dimensions(n: Node) -> Vec<Dimension> {
+    n.children()
+        .filter(|c| c.is_element() && c.tag_name().name() == "Dimension")
+        .filter_map(|c| {
+            if let Some(s) = c.attribute("start") {
+                s.parse::<u64>().ok().map(Dimension::Fixed)
+            } else {
+                c.attribute("valueReference")
+                    .and_then(|s| s.parse().ok())
+                    .map(Dimension::Referenced)
+            }
+        })
+        .collect()
+}
+
+/// Parse a boolean the way the FMI 3.0 XSD does (`xs:boolean` accepts both
+/// spellings of each value).
+fn parse_xs_bool(s: &str) -> bool {
+    s == "true" || s == "1"
+}
+
+/// Decode a hex string into bytes, as used by the `value` attribute of a
+/// `<Start>` element under a `<Binary>` variable. An odd length or a non-hex
+/// digit yields `None`.
+fn parse_hex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02X}")).collect()
+}
+
+/// Start values, in either of the two forms FMI 3.0 defines (§2.4.7.5):
+///
+///  - numeric and boolean variables use a `start` attribute holding a
+///    whitespace-separated list (a single entry broadcasts across an array);
+///  - `<String>` and `<Binary>` variables use a sequence of `<Start value=".."/>`
+///    child elements, one per array element.
 fn parse_start_value(n: Node, ty: VarType) -> Option<StartValue> {
+    if matches!(ty, VarType::String | VarType::Binary) {
+        let items: Vec<&str> = n
+            .children()
+            .filter(|c| c.is_element() && c.tag_name().name() == "Start")
+            .filter_map(|c| c.attribute("value"))
+            .collect();
+        if items.is_empty() {
+            return None;
+        }
+        return Some(match ty {
+            VarType::String => StartValue::String(items.iter().map(|s| (*s).to_owned()).collect()),
+            _ => StartValue::Binary(
+                items
+                    .iter()
+                    .map(|s| parse_hex(s).unwrap_or_default())
+                    .collect(),
+            ),
+        });
+    }
+
     let s = n.attribute("start")?;
+    let items: Vec<&str> = s.split_whitespace().collect();
+    if items.is_empty() {
+        return None;
+    }
     match ty {
-        VarType::Float32 | VarType::Float64 => s.parse::<f64>().ok().map(StartValue::Float64),
+        VarType::Float32 | VarType::Float64 => items
+            .iter()
+            .map(|t| t.parse::<f64>().ok())
+            .collect::<Option<Vec<_>>>()
+            .map(StartValue::Float64),
         VarType::Int8
         | VarType::UInt8
         | VarType::Int16
@@ -711,9 +1064,20 @@ fn parse_start_value(n: Node, ty: VarType) -> Option<StartValue> {
         | VarType::Int32
         | VarType::UInt32
         | VarType::Int64
-        | VarType::UInt64 => s.parse::<i64>().ok().map(StartValue::Int64),
-        VarType::Boolean => Some(StartValue::Boolean(s == "true" || s == "1")),
-        VarType::String => Some(StartValue::String(s.to_owned())),
+        | VarType::UInt64 => items
+            .iter()
+            .map(|t| t.parse::<i64>().ok())
+            .collect::<Option<Vec<_>>>()
+            .map(StartValue::Int64),
+        VarType::Boolean => Some(StartValue::Boolean(
+            items.iter().map(|t| parse_xs_bool(t)).collect(),
+        )),
+        // Enumeration values are integers on the wire; Clock has no start value.
+        VarType::Enumeration => items
+            .iter()
+            .map(|t| t.parse::<i64>().ok())
+            .collect::<Option<Vec<_>>>()
+            .map(StartValue::Int64),
         _ => None,
     }
 }
@@ -807,6 +1171,136 @@ mod tests {
         assert_eq!(md.variable_by_vr(3).unwrap().name, "k");
     }
 
+    // --- array variables ---------------------------------------------------
+
+    /// Both `<Dimension>` forms in one description: a constant size, a size read
+    /// from a structural parameter, and a two-dimensional array combining them.
+    /// Modelled on the Reference-FMUs' `StateSpace` and PMSF's `DynamicArrayTest`.
+    const ARRAYS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<fmiModelDescription fmiVersion="3.0" modelName="Arrays" instantiationToken="t">
+  <ModelVariables>
+    <UInt64 name="n" valueReference="1" causality="structuralParameter" variability="tunable" start="4"/>
+    <Float64 name="scalar" valueReference="2" causality="parameter" variability="tunable" start="2.5"/>
+    <Float64 name="fixed" valueReference="3" causality="parameter" variability="tunable" start="1 2 3">
+      <Dimension start="3"/>
+    </Float64>
+    <Float64 name="dynamic" valueReference="4" causality="input" start="7">
+      <Dimension valueReference="1"/>
+    </Float64>
+    <Float64 name="matrix" valueReference="5" causality="parameter" variability="tunable" start="0.5">
+      <Dimension start="2"/>
+      <Dimension valueReference="1"/>
+    </Float64>
+    <String name="label" valueReference="6" causality="parameter" variability="tunable">
+      <Start value="alpha"/>
+      <Start value="beta"/>
+    </String>
+    <Binary name="blob" valueReference="7" causality="parameter" variability="tunable">
+      <Start value="BEEF"/>
+    </Binary>
+  </ModelVariables>
+  <ModelStructure/>
+</fmiModelDescription>
+"#;
+
+    #[test]
+    fn parses_both_dimension_forms() {
+        let md = ModelDescription::from_str(ARRAYS).unwrap();
+        let dims = |name: &str| md.variable_by_name(name).unwrap().dimensions.clone();
+
+        assert!(dims("scalar").is_empty());
+        assert_eq!(dims("fixed"), vec![Dimension::Fixed(3)]);
+        assert_eq!(dims("dynamic"), vec![Dimension::Referenced(1)]);
+        assert_eq!(
+            dims("matrix"),
+            vec![Dimension::Fixed(2), Dimension::Referenced(1)]
+        );
+        assert!(!md.variable_by_name("scalar").unwrap().is_array());
+        assert!(md.variable_by_name("fixed").unwrap().is_array());
+    }
+
+    #[test]
+    fn n_values_is_the_product_of_the_dimension_sizes() {
+        let md = ModelDescription::from_str(ARRAYS).unwrap();
+        let n = |name: &str| md.n_values(md.variable_by_name(name).unwrap());
+
+        assert_eq!(n("scalar"), 1, "a scalar is the empty product");
+        assert_eq!(n("fixed"), 3);
+        assert_eq!(n("dynamic"), 4, "resolved through structural parameter n=4");
+        assert_eq!(n("matrix"), 2 * 4);
+
+        let vars = ["fixed", "dynamic"].map(|s| md.variable_by_name(s).unwrap());
+        assert_eq!(md.total_n_values(vars.into_iter()), 7);
+    }
+
+    #[test]
+    fn structural_parameter_change_resizes_dependent_arrays() {
+        let mut md = ModelDescription::from_str(ARRAYS).unwrap();
+        md.set_dimension_size(1, 2);
+
+        assert_eq!(md.n_values(md.variable_by_name("dynamic").unwrap()), 2);
+        assert_eq!(md.n_values(md.variable_by_name("matrix").unwrap()), 2 * 2);
+        // A constant dimension is unaffected by the structural parameter.
+        assert_eq!(md.n_values(md.variable_by_name("fixed").unwrap()), 3);
+
+        // A dimension may legitimately go to zero (FMI 3.0 §2.4.7.4).
+        md.set_dimension_size(1, 0);
+        assert_eq!(md.n_values(md.variable_by_name("dynamic").unwrap()), 0);
+
+        assert_eq!(
+            md.structural_parameters().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+            vec!["n"]
+        );
+    }
+
+    #[test]
+    fn start_values_parse_as_lists_and_broadcast() {
+        let md = ModelDescription::from_str(ARRAYS).unwrap();
+        let start = |name: &str| md.variable_by_name(name).unwrap().start.clone().unwrap();
+
+        // A list start is kept element by element.
+        assert_eq!(start("fixed"), StartValue::Float64(vec![1.0, 2.0, 3.0]));
+        assert_eq!(start("fixed").expand_f64(3).unwrap(), vec![1.0, 2.0, 3.0]);
+
+        // A single value fills the whole array (FMI 3.0 §2.4.7.5).
+        assert_eq!(start("dynamic"), StartValue::Float64(vec![7.0]));
+        assert_eq!(start("dynamic").expand_f64(4).unwrap(), vec![7.0; 4]);
+        assert_eq!(start("matrix").expand_f64(8).unwrap(), vec![0.5; 8]);
+
+        // Scalars still behave like one-element arrays.
+        assert_eq!(start("scalar").as_f64(), Some(2.5));
+        assert_eq!(start("scalar").expand_f64(1).unwrap(), vec![2.5]);
+    }
+
+    #[test]
+    fn string_and_binary_starts_come_from_child_elements() {
+        let md = ModelDescription::from_str(ARRAYS).unwrap();
+        assert_eq!(
+            md.variable_by_name("label").unwrap().start,
+            Some(StartValue::String(vec!["alpha".into(), "beta".into()]))
+        );
+        assert_eq!(
+            md.variable_by_name("blob").unwrap().start,
+            Some(StartValue::Binary(vec![vec![0xBE, 0xEF]]))
+        );
+    }
+
+    #[test]
+    fn round_trips_array_variables() {
+        // The writer has to emit `<Dimension>` and `<Start>` children, which
+        // means the variable element stops being self-closing.
+        let a = ModelDescription::from_str(ARRAYS).unwrap();
+        let b = ModelDescription::from_str(&a.to_xml()).unwrap();
+
+        for name in ["scalar", "fixed", "dynamic", "matrix", "label", "blob"] {
+            let va = a.variable_by_name(name).unwrap();
+            let vb = b.variable_by_name(name).unwrap();
+            assert_eq!(va.dimensions, vb.dimensions, "{name} dimensions");
+            assert_eq!(va.start, vb.start, "{name} start");
+            assert_eq!(a.n_values(va), b.n_values(vb), "{name} n_values");
+        }
+    }
+
     // --- writer round-trips ------------------------------------------------
 
     /// Parse a fixture, serialize it back out, re-parse, and assert the
@@ -867,42 +1361,26 @@ mod tests {
     fn writer_emits_constructed_model() {
         // Build a minimal ME model by hand (the export path) and check the
         // emitted XML re-parses into the same shape.
+        let f64_var = |name: &str, vr, causality, variability| {
+            Variable::scalar(name, vr, VarType::Float64, causality, variability)
+        };
         let vars = vec![
+            f64_var(
+                "time",
+                0,
+                Causality::Independent,
+                Variability::Continuous,
+            ),
             Variable {
-                name: "time".into(),
-                value_reference: 0,
-                var_type: VarType::Float64,
-                causality: Causality::Independent,
-                variability: Variability::Continuous,
-                initial: None,
-                description: None,
-                start: None,
-                derivative_of: None,
-                max_output_derivative_order: 0,
-            },
-            Variable {
-                name: "x".into(),
-                value_reference: 1,
-                var_type: VarType::Float64,
-                causality: Causality::Output,
-                variability: Variability::Continuous,
                 initial: Some(Initial::Exact),
                 description: Some("state & output".into()),
-                start: Some(StartValue::Float64(1.0)),
-                derivative_of: None,
-                max_output_derivative_order: 0,
+                start: Some(StartValue::scalar_f64(1.0)),
+                ..f64_var("x", 1, Causality::Output, Variability::Continuous)
             },
             Variable {
-                name: "der(x)".into(),
-                value_reference: 2,
-                var_type: VarType::Float64,
-                causality: Causality::Local,
-                variability: Variability::Continuous,
                 initial: Some(Initial::Calculated),
-                description: None,
-                start: None,
                 derivative_of: Some(1),
-                max_output_derivative_order: 0,
+                ..f64_var("der(x)", 2, Causality::Local, Variability::Continuous)
             },
         ];
         let md = ModelDescription::new(

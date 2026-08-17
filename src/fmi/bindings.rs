@@ -168,6 +168,35 @@ setter_fn!(Fmi3SetUInt64Fn, fmi3UInt64);
 setter_fn!(Fmi3SetBooleanFn, fmi3Boolean);
 setter_fn!(Fmi3SetStringFn, fmi3String);
 
+// `Binary` breaks the pattern: each value carries its own byte count, so the
+// call takes a parallel `valueSizes` array alongside the pointers.
+pub type Fmi3GetBinaryFn = unsafe extern "C" fn(
+    instance: fmi3Instance,
+    value_references: *const fmi3ValueReference,
+    n_value_references: usize,
+    value_sizes: *mut usize,
+    values: *mut fmi3Binary,
+    n_values: usize,
+) -> i32;
+
+pub type Fmi3SetBinaryFn = unsafe extern "C" fn(
+    instance: fmi3Instance,
+    value_references: *const fmi3ValueReference,
+    n_value_references: usize,
+    value_sizes: *const usize,
+    values: *const fmi3Binary,
+    n_values: usize,
+) -> i32;
+
+// --- Configuration Mode (structural parameters; FMI 3.0 §2.3.2) -----------
+//
+// Entered from `Instantiated` (before initialization) or from `StepMode` /
+// `EventMode` (as Reconfiguration Mode) to change `structuralParameter`
+// variables, which is how array dimensions are resized.
+
+pub type Fmi3EnterConfigurationModeFn = unsafe extern "C" fn(instance: fmi3Instance) -> i32;
+pub type Fmi3ExitConfigurationModeFn = unsafe extern "C" fn(instance: fmi3Instance) -> i32;
+
 // --- FMU state (checkpointing — not used in phase 1 but cheap to expose) --
 
 pub type Fmi3GetFMUStateFn =
@@ -302,14 +331,41 @@ pub mod sym {
     pub const RESET: &[u8] = b"fmi3Reset\0";
     pub const SET_DEBUG_LOGGING: &[u8] = b"fmi3SetDebugLogging\0";
 
+    // The full typed accessor table. Every FMU exports all of these, but an FMU
+    // with no variables of a given type may implement it as a refusing stub, so
+    // only Float64 is resolved as required — see `instance::TypedFns`.
+    pub const GET_FLOAT32: &[u8] = b"fmi3GetFloat32\0";
+    pub const SET_FLOAT32: &[u8] = b"fmi3SetFloat32\0";
     pub const GET_FLOAT64: &[u8] = b"fmi3GetFloat64\0";
     pub const SET_FLOAT64: &[u8] = b"fmi3SetFloat64\0";
+    pub const GET_INT8: &[u8] = b"fmi3GetInt8\0";
+    pub const SET_INT8: &[u8] = b"fmi3SetInt8\0";
+    pub const GET_UINT8: &[u8] = b"fmi3GetUInt8\0";
+    pub const SET_UINT8: &[u8] = b"fmi3SetUInt8\0";
+    pub const GET_INT16: &[u8] = b"fmi3GetInt16\0";
+    pub const SET_INT16: &[u8] = b"fmi3SetInt16\0";
+    pub const GET_UINT16: &[u8] = b"fmi3GetUInt16\0";
+    pub const SET_UINT16: &[u8] = b"fmi3SetUInt16\0";
     pub const GET_INT32: &[u8] = b"fmi3GetInt32\0";
     pub const SET_INT32: &[u8] = b"fmi3SetInt32\0";
+    pub const GET_UINT32: &[u8] = b"fmi3GetUInt32\0";
+    pub const SET_UINT32: &[u8] = b"fmi3SetUInt32\0";
+    pub const GET_INT64: &[u8] = b"fmi3GetInt64\0";
+    pub const SET_INT64: &[u8] = b"fmi3SetInt64\0";
+    pub const GET_UINT64: &[u8] = b"fmi3GetUInt64\0";
+    pub const SET_UINT64: &[u8] = b"fmi3SetUInt64\0";
     pub const GET_BOOLEAN: &[u8] = b"fmi3GetBoolean\0";
     pub const SET_BOOLEAN: &[u8] = b"fmi3SetBoolean\0";
+    pub const GET_STRING: &[u8] = b"fmi3GetString\0";
+    pub const SET_STRING: &[u8] = b"fmi3SetString\0";
+    pub const GET_BINARY: &[u8] = b"fmi3GetBinary\0";
+    pub const SET_BINARY: &[u8] = b"fmi3SetBinary\0";
 
     pub const UPDATE_DISCRETE_STATES: &[u8] = b"fmi3UpdateDiscreteStates\0";
+
+    // Configuration Mode
+    pub const ENTER_CONFIGURATION_MODE: &[u8] = b"fmi3EnterConfigurationMode\0";
+    pub const EXIT_CONFIGURATION_MODE: &[u8] = b"fmi3ExitConfigurationMode\0";
 
     // Model Exchange
     pub const ENTER_CONTINUOUS: &[u8] = b"fmi3EnterContinuousTimeMode\0";

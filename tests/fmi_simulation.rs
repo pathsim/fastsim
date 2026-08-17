@@ -189,7 +189,7 @@ fn invalid_start_value_key_returns_error() {
     use std::collections::HashMap;
 
     let mut starts = HashMap::new();
-    starts.insert("does_not_exist".to_owned(), 42.0);
+    starts.insert("does_not_exist".to_owned(), vec![42.0]);
     let res = model_exchange_fmu(DAHLQUIST_FMU, "err", Some(starts), 1e-6, false);
     assert!(matches!(
         res,

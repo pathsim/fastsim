@@ -44,7 +44,7 @@ fn me_block_derivatives_match_dahlquist() {
 #[test]
 fn me_block_with_start_value_override() {
     let mut starts = HashMap::new();
-    starts.insert("k".to_owned(), 2.0); // change decay rate
+    starts.insert("k".to_owned(), vec![2.0]); // change decay rate
 
     let blk = model_exchange_fmu(DAHLQUIST_FMU, "me2", Some(starts), 1e-6, false)
         .expect("construct");

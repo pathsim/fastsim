@@ -105,19 +105,23 @@ pub fn build(layout: &ModelLayout, n_indicators: usize) -> FmiVars {
     let mut variables = Vec::with_capacity(layout.vars.len() + layout.n_state + 1);
     let mut structure = ModelStructure::default();
 
+    // Everything fastsim exports is a Float64 scalar; only causality,
+    // variability and the optional fields differ per role, which the
+    // struct-update syntax below fills in.
+    let f64_var = |name: &str, vr, causality, variability| {
+        Variable::scalar(name, vr, VarType::Float64, causality, variability)
+    };
+
     // The independent variable. FMI 3.0 requires exactly one; `time` is the
     // conventional name and carries no start.
     variables.push(Variable {
-        name: "time".into(),
-        value_reference: vr.time_vr,
-        var_type: VarType::Float64,
-        causality: Causality::Independent,
-        variability: Variability::Continuous,
-        initial: None,
         description: Some("Simulation time".into()),
-        start: None,
-        derivative_of: None,
-        max_output_derivative_order: 0,
+        ..f64_var(
+            "time",
+            vr.time_vr,
+            Causality::Independent,
+            Variability::Continuous,
+        )
     });
 
     // States: local continuous variables with an exact start. Their derivatives
@@ -127,29 +131,20 @@ pub fn build(layout: &ModelLayout, n_indicators: usize) -> FmiVars {
     for (i, st) in layout.states().enumerate() {
         let state_vr = st.signal_id as fmi3ValueReference;
         variables.push(Variable {
-            name: st.name.clone(),
-            value_reference: state_vr,
-            var_type: VarType::Float64,
-            causality: Causality::Local,
-            variability: Variability::Continuous,
             initial: Some(Initial::Exact),
-            description: None,
-            start: st.start.map(StartValue::Float64),
-            derivative_of: None,
-            max_output_derivative_order: 0,
+            start: st.start.map(StartValue::scalar_f64),
+            ..f64_var(&st.name, state_vr, Causality::Local, Variability::Continuous)
         });
         let dvr = vr.der_vr(i);
         variables.push(Variable {
-            name: format!("der({})", st.name),
-            value_reference: dvr,
-            var_type: VarType::Float64,
-            causality: Causality::Local,
-            variability: Variability::Continuous,
             initial: Some(Initial::Calculated),
-            description: None,
-            start: None,
             derivative_of: Some(state_vr),
-            max_output_derivative_order: 0,
+            ..f64_var(
+                &format!("der({})", st.name),
+                dvr,
+                Causality::Local,
+                Variability::Continuous,
+            )
         });
         structure.continuous_state_derivatives.push(dvr);
         structure.initial_unknowns.push(dvr);
@@ -159,16 +154,8 @@ pub fn build(layout: &ModelLayout, n_indicators: usize) -> FmiVars {
     for out in layout.outputs() {
         let out_vr = out.signal_id as fmi3ValueReference;
         variables.push(Variable {
-            name: out.name.clone(),
-            value_reference: out_vr,
-            var_type: VarType::Float64,
-            causality: Causality::Output,
-            variability: Variability::Continuous,
             initial: Some(Initial::Calculated),
-            description: None,
-            start: None,
-            derivative_of: None,
-            max_output_derivative_order: 0,
+            ..f64_var(&out.name, out_vr, Causality::Output, Variability::Continuous)
         });
         structure.outputs.push(out_vr);
         structure.initial_unknowns.push(out_vr);
@@ -178,16 +165,13 @@ pub fn build(layout: &ModelLayout, n_indicators: usize) -> FmiVars {
     // `<Output>` / initial unknowns), but still readable through `get_signal`.
     for loc in layout.locals() {
         variables.push(Variable {
-            name: loc.name.clone(),
-            value_reference: loc.signal_id as fmi3ValueReference,
-            var_type: VarType::Float64,
-            causality: Causality::Local,
-            variability: Variability::Continuous,
             initial: Some(Initial::Calculated),
-            description: None,
-            start: None,
-            derivative_of: None,
-            max_output_derivative_order: 0,
+            ..f64_var(
+                &loc.name,
+                loc.signal_id as fmi3ValueReference,
+                Causality::Local,
+                Variability::Continuous,
+            )
         });
     }
 
@@ -196,16 +180,13 @@ pub fn build(layout: &ModelLayout, n_indicators: usize) -> FmiVars {
     // start.
     for p in layout.params() {
         variables.push(Variable {
-            name: p.name.clone(),
-            value_reference: p.signal_id as fmi3ValueReference,
-            var_type: VarType::Float64,
-            causality: Causality::Parameter,
-            variability: Variability::Tunable,
-            initial: None,
-            description: None,
-            start: p.start.map(StartValue::Float64),
-            derivative_of: None,
-            max_output_derivative_order: 0,
+            start: p.start.map(StartValue::scalar_f64),
+            ..f64_var(
+                &p.name,
+                p.signal_id as fmi3ValueReference,
+                Causality::Parameter,
+                Variability::Tunable,
+            )
         });
     }
 
@@ -214,16 +195,13 @@ pub fn build(layout: &ModelLayout, n_indicators: usize) -> FmiVars {
     // `signal_id` is the flat `u[]` index.
     for inp in layout.inputs() {
         variables.push(Variable {
-            name: inp.name.clone(),
-            value_reference: vr.input_vr(inp.signal_id),
-            var_type: VarType::Float64,
-            causality: Causality::Input,
-            variability: Variability::Continuous,
-            initial: None,
-            description: None,
-            start: Some(StartValue::Float64(0.0)),
-            derivative_of: None,
-            max_output_derivative_order: 0,
+            start: Some(StartValue::scalar_f64(0.0)),
+            ..f64_var(
+                &inp.name,
+                vr.input_vr(inp.signal_id),
+                Causality::Input,
+                Variability::Continuous,
+            )
         });
     }
 
@@ -233,16 +211,13 @@ pub fn build(layout: &ModelLayout, n_indicators: usize) -> FmiVars {
     for i in 0..n_indicators {
         let ivr = vr.ind_vr(i);
         variables.push(Variable {
-            name: format!("event_indicator_{i}"),
-            value_reference: ivr,
-            var_type: VarType::Float64,
-            causality: Causality::Local,
-            variability: Variability::Continuous,
             initial: Some(Initial::Calculated),
-            description: None,
-            start: None,
-            derivative_of: None,
-            max_output_derivative_order: 0,
+            ..f64_var(
+                &format!("event_indicator_{i}"),
+                ivr,
+                Causality::Local,
+                Variability::Continuous,
+            )
         });
         structure.event_indicators.push(ivr);
     }

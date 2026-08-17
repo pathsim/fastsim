@@ -74,6 +74,18 @@ struct Fns {
     // modelDescription.xml.  Populated for ME FMUs that advertise it; absent
     // otherwise (callers must consult `Instance::supports_directional_derivatives`).
     get_directional_derivative: Option<Fmi3GetDirectionalDerivativeFn>,
+
+    // Configuration Mode — only needed by FMUs that declare structural
+    // parameters, so absent from FMUs that have none.
+    enter_configuration_mode: Option<Fmi3EnterConfigurationModeFn>,
+    exit_configuration_mode: Option<Fmi3ExitConfigurationModeFn>,
+
+    // String / Binary accessors. Kept here rather than in `TypedFns` because
+    // their signatures do not fit the uniform typed-accessor shape.
+    get_string: Option<Fmi3GetStringFn>,
+    set_string: Option<Fmi3SetStringFn>,
+    get_binary: Option<Fmi3GetBinaryFn>,
+    set_binary: Option<Fmi3SetBinaryFn>,
 }
 
 macro_rules! load_required {
@@ -96,12 +108,110 @@ macro_rules! load_optional {
     }};
 }
 
+// --- the typed accessor table ---------------------------------------------
+
+fn missing_symbol(name: &'static str) -> FmiError {
+    FmiError::ModelDescription(format!("FMU does not export {name}"))
+}
+
+/// Generate the `fmi3Get{T}` / `fmi3Set{T}` pairs that share the uniform
+/// `(vrs, nValueReferences, values, nValues)` shape — every FMI 3.0 type except
+/// `String` and `Binary`, which carry per-value indirection and are written out
+/// by hand below.
+///
+/// FMI 3.0 requires an FMU to export the complete table, but a few in the wild
+/// ship only the accessors their variables need. Resolving them optionally lets
+/// such an FMU load and fail with a precise message at the call that needs the
+/// missing symbol, rather than being rejected outright.
+macro_rules! typed_accessors {
+    ($(
+        $name:literal, $elem:ty, $get_ty:ty, $set_ty:ty,
+        $get_sym:ident, $set_sym:ident, $get_fn:ident, $set_fn:ident,
+        $get_field:ident, $set_field:ident;
+    )*) => {
+        #[derive(Default)]
+        struct TypedFns {
+            $( $get_field: Option<$get_ty>, $set_field: Option<$set_ty>, )*
+        }
+
+        impl TypedFns {
+            fn load(lib: &Library) -> Self {
+                Self {
+                    $(
+                        $get_field: load_optional!(lib, sym::$get_sym, $get_ty),
+                        $set_field: load_optional!(lib, sym::$set_sym, $set_ty),
+                    )*
+                }
+            }
+        }
+
+        impl<K> Instance<K> {
+            $(
+                #[doc = concat!("`fmi3Get", $name, "`. `out.len()` is `nValues`,")]
+                #[doc = "the total element count across the referenced variables,"]
+                #[doc = "which exceeds `vrs.len()` when any of them is an array."]
+                pub fn $get_fn(
+                    &self,
+                    vrs: &[fmi3ValueReference],
+                    out: &mut [$elem],
+                ) -> Result<()> {
+                    let f = self.typed.$get_field
+                        .ok_or_else(|| missing_symbol(concat!("fmi3Get", $name)))?;
+                    let status = unsafe {
+                        f(self.ptr, vrs.as_ptr(), vrs.len(), out.as_mut_ptr(), out.len())
+                    };
+                    check(status, concat!("fmi3Get", $name))
+                }
+
+                #[doc = concat!("`fmi3Set", $name, "`. See the getter for the")]
+                #[doc = "`nValues` versus `nValueReferences` distinction."]
+                pub fn $set_fn(
+                    &self,
+                    vrs: &[fmi3ValueReference],
+                    values: &[$elem],
+                ) -> Result<()> {
+                    let f = self.typed.$set_field
+                        .ok_or_else(|| missing_symbol(concat!("fmi3Set", $name)))?;
+                    let status = unsafe {
+                        f(self.ptr, vrs.as_ptr(), vrs.len(), values.as_ptr(), values.len())
+                    };
+                    check(status, concat!("fmi3Set", $name))
+                }
+            )*
+        }
+    };
+}
+
+typed_accessors! {
+    "Float32", fmi3Float32, Fmi3GetFloat32Fn, Fmi3SetFloat32Fn,
+        GET_FLOAT32, SET_FLOAT32, get_float32, set_float32, get_f32, set_f32;
+    "Int8", fmi3Int8, Fmi3GetInt8Fn, Fmi3SetInt8Fn,
+        GET_INT8, SET_INT8, get_int8, set_int8, get_i8, set_i8;
+    "UInt8", fmi3UInt8, Fmi3GetUInt8Fn, Fmi3SetUInt8Fn,
+        GET_UINT8, SET_UINT8, get_uint8, set_uint8, get_u8, set_u8;
+    "Int16", fmi3Int16, Fmi3GetInt16Fn, Fmi3SetInt16Fn,
+        GET_INT16, SET_INT16, get_int16, set_int16, get_i16, set_i16;
+    "UInt16", fmi3UInt16, Fmi3GetUInt16Fn, Fmi3SetUInt16Fn,
+        GET_UINT16, SET_UINT16, get_uint16, set_uint16, get_u16, set_u16;
+    "Int32", fmi3Int32, Fmi3GetInt32Fn, Fmi3SetInt32Fn,
+        GET_INT32, SET_INT32, get_int32, set_int32, get_i32, set_i32;
+    "UInt32", fmi3UInt32, Fmi3GetUInt32Fn, Fmi3SetUInt32Fn,
+        GET_UINT32, SET_UINT32, get_uint32, set_uint32, get_u32, set_u32;
+    "Int64", fmi3Int64, Fmi3GetInt64Fn, Fmi3SetInt64Fn,
+        GET_INT64, SET_INT64, get_int64, set_int64, get_i64, set_i64;
+    "UInt64", fmi3UInt64, Fmi3GetUInt64Fn, Fmi3SetUInt64Fn,
+        GET_UINT64, SET_UINT64, get_uint64, set_uint64, get_u64, set_u64;
+    "Boolean", fmi3Boolean, Fmi3GetBooleanFn, Fmi3SetBooleanFn,
+        GET_BOOLEAN, SET_BOOLEAN, get_boolean, set_boolean, get_bool, set_bool;
+}
+
 // --- Instance --------------------------------------------------------------
 
 pub struct Instance<K> {
     // Declaration order matters — see file header comment.
     ptr: fmi3Instance,
     fns: Fns,
+    typed: TypedFns,
     // Held to keep the logging environment, loaded library and extracted FMU
     // alive for the instance's lifetime (and to drop in the right order);
     // never read back after construction.
@@ -168,6 +278,16 @@ fn load_common_fns(lib: &Library) -> Result<Fns> {
         do_step: None,
         get_output_derivatives: None,
         get_directional_derivative: None,
+        enter_configuration_mode: load_optional!(
+            lib, sym::ENTER_CONFIGURATION_MODE, Fmi3EnterConfigurationModeFn
+        ),
+        exit_configuration_mode: load_optional!(
+            lib, sym::EXIT_CONFIGURATION_MODE, Fmi3ExitConfigurationModeFn
+        ),
+        get_string: load_optional!(lib, sym::GET_STRING, Fmi3GetStringFn),
+        set_string: load_optional!(lib, sym::SET_STRING, Fmi3SetStringFn),
+        get_binary: load_optional!(lib, sym::GET_BINARY, Fmi3GetBinaryFn),
+        set_binary: load_optional!(lib, sym::SET_BINARY, Fmi3SetBinaryFn),
     })
 }
 
@@ -187,6 +307,7 @@ impl Instance<Me> {
 
         let lib = load_library(&archive, &me_info.model_identifier)?;
         let mut fns = load_common_fns(&lib)?;
+        let typed = TypedFns::load(&lib);
 
         fns.enter_continuous_time_mode = Some(load_required!(
             &lib, sym::ENTER_CONTINUOUS, Fmi3EnterContinuousTimeModeFn
@@ -250,6 +371,7 @@ impl Instance<Me> {
         Ok(Self {
             ptr,
             fns,
+            typed,
             log_env,
             lib,
             archive,
@@ -281,6 +403,7 @@ impl Instance<Cs> {
 
         let lib = load_library(&archive, &cs_info.model_identifier)?;
         let mut fns = load_common_fns(&lib)?;
+        let typed = TypedFns::load(&lib);
 
         fns.enter_step_mode = Some(load_required!(
             &lib, sym::ENTER_STEP_MODE, Fmi3EnterStepModeFn
@@ -343,6 +466,7 @@ impl Instance<Cs> {
         Ok(Self {
             ptr,
             fns,
+            typed,
             log_env,
             lib,
             archive,
@@ -397,8 +521,13 @@ impl<K> Instance<K> {
         check(status, "fmi3Terminate")
     }
 
+    /// `fmi3SetFloat64`. `values` is the flat concatenation of every referenced
+    /// variable's elements, so its length is `nValues` — the total element count
+    /// — while `vrs.len()` is `nValueReferences`. The two differ whenever any
+    /// referenced variable is an array (FMI 3.0 §2.2.6); callers size `values`
+    /// with `ModelDescription::total_n_values`.
     pub fn set_float64(&self, vrs: &[fmi3ValueReference], values: &[f64]) -> Result<()> {
-        debug_assert_eq!(vrs.len(), values.len());
+        debug_assert!(values.len() >= vrs.len());
         let status = unsafe {
             (self.fns.set_float64)(
                 self.ptr,
@@ -411,8 +540,10 @@ impl<K> Instance<K> {
         check(status, "fmi3SetFloat64")
     }
 
+    /// `fmi3GetFloat64`. See `set_float64` for the `nValues` vs
+    /// `nValueReferences` distinction.
     pub fn get_float64(&self, vrs: &[fmi3ValueReference], out: &mut [f64]) -> Result<()> {
-        debug_assert_eq!(vrs.len(), out.len());
+        debug_assert!(out.len() >= vrs.len());
         let status = unsafe {
             (self.fns.get_float64)(
                 self.ptr,
@@ -423,6 +554,148 @@ impl<K> Instance<K> {
             )
         };
         check(status, "fmi3GetFloat64")
+    }
+
+    // --- String / Binary --------------------------------------------------
+
+    /// `fmi3GetString`. Returns one owned `String` per value, copied out of the
+    /// FMU's buffers immediately: FMI 3.0 §2.2.6 only guarantees the returned
+    /// pointers stay valid until the next call into the FMU.
+    ///
+    /// `n_values` is the total element count across `vrs` — pass
+    /// `ModelDescription::total_n_values`, which equals `vrs.len()` for scalars.
+    pub fn get_string(
+        &self,
+        vrs: &[fmi3ValueReference],
+        n_values: usize,
+    ) -> Result<Vec<String>> {
+        let f = self
+            .fns
+            .get_string
+            .ok_or_else(|| missing_symbol("fmi3GetString"))?;
+        let mut raw: Vec<fmi3String> = vec![ptr::null(); n_values];
+        let status =
+            unsafe { f(self.ptr, vrs.as_ptr(), vrs.len(), raw.as_mut_ptr(), n_values) };
+        check(status, "fmi3GetString")?;
+        Ok(raw
+            .into_iter()
+            .map(|p| {
+                if p.is_null() {
+                    String::new()
+                } else {
+                    // SAFETY: the FMU returned a NUL-terminated C string that
+                    // stays valid until our next call into it; we copy here.
+                    unsafe { std::ffi::CStr::from_ptr(p) }
+                        .to_string_lossy()
+                        .into_owned()
+                }
+            })
+            .collect())
+    }
+
+    /// `fmi3SetString`. The `CString`s are kept alive across the call by the
+    /// local `owned` vector.
+    pub fn set_string(&self, vrs: &[fmi3ValueReference], values: &[String]) -> Result<()> {
+        let f = self
+            .fns
+            .set_string
+            .ok_or_else(|| missing_symbol("fmi3SetString"))?;
+        let owned: Vec<CString> = values
+            .iter()
+            .map(|s| cstr(s.as_str(), "string start value"))
+            .collect::<Result<_>>()?;
+        let ptrs: Vec<fmi3String> = owned.iter().map(|c| c.as_ptr()).collect();
+        let status =
+            unsafe { f(self.ptr, vrs.as_ptr(), vrs.len(), ptrs.as_ptr(), ptrs.len()) };
+        check(status, "fmi3SetString")
+    }
+
+    /// `fmi3GetBinary`. The FMU fills a parallel `valueSizes` array, so the byte
+    /// count of each value is known only after the call; the data is copied out
+    /// before returning for the same lifetime reason as `get_string`.
+    pub fn get_binary(
+        &self,
+        vrs: &[fmi3ValueReference],
+        n_values: usize,
+    ) -> Result<Vec<Vec<u8>>> {
+        let f = self
+            .fns
+            .get_binary
+            .ok_or_else(|| missing_symbol("fmi3GetBinary"))?;
+        let mut sizes: Vec<usize> = vec![0; n_values];
+        let mut raw: Vec<fmi3Binary> = vec![ptr::null(); n_values];
+        let status = unsafe {
+            f(
+                self.ptr,
+                vrs.as_ptr(),
+                vrs.len(),
+                sizes.as_mut_ptr(),
+                raw.as_mut_ptr(),
+                n_values,
+            )
+        };
+        check(status, "fmi3GetBinary")?;
+        Ok(raw
+            .into_iter()
+            .zip(sizes)
+            .map(|(p, n)| {
+                if p.is_null() || n == 0 {
+                    Vec::new()
+                } else {
+                    // SAFETY: the FMU reported `n` readable bytes at `p`.
+                    unsafe { std::slice::from_raw_parts(p, n) }.to_vec()
+                }
+            })
+            .collect())
+    }
+
+    /// `fmi3SetBinary`.
+    pub fn set_binary(&self, vrs: &[fmi3ValueReference], values: &[Vec<u8>]) -> Result<()> {
+        let f = self
+            .fns
+            .set_binary
+            .ok_or_else(|| missing_symbol("fmi3SetBinary"))?;
+        let sizes: Vec<usize> = values.iter().map(|v| v.len()).collect();
+        let ptrs: Vec<fmi3Binary> = values.iter().map(|v| v.as_ptr()).collect();
+        let status = unsafe {
+            f(
+                self.ptr,
+                vrs.as_ptr(),
+                vrs.len(),
+                sizes.as_ptr(),
+                ptrs.as_ptr(),
+                ptrs.len(),
+            )
+        };
+        check(status, "fmi3SetBinary")
+    }
+
+    // --- Configuration Mode ------------------------------------------------
+
+    /// Whether the FMU exports the Configuration Mode entry points, i.e. whether
+    /// its structural parameters can be changed at all.
+    pub fn supports_configuration_mode(&self) -> bool {
+        self.fns.enter_configuration_mode.is_some() && self.fns.exit_configuration_mode.is_some()
+    }
+
+    /// `fmi3EnterConfigurationMode` — the only state in which structural
+    /// parameters, and therefore array dimensions, may be set (FMI 3.0 §2.3.2).
+    /// Entered from `Instantiated` before initialization, or from Step/Event
+    /// Mode afterwards (where the spec calls it Reconfiguration Mode).
+    pub fn enter_configuration_mode(&self) -> Result<()> {
+        let f = self
+            .fns
+            .enter_configuration_mode
+            .ok_or_else(|| missing_symbol("fmi3EnterConfigurationMode"))?;
+        check(unsafe { f(self.ptr) }, "fmi3EnterConfigurationMode")
+    }
+
+    pub fn exit_configuration_mode(&self) -> Result<()> {
+        let f = self
+            .fns
+            .exit_configuration_mode
+            .ok_or_else(|| missing_symbol("fmi3ExitConfigurationMode"))?;
+        check(unsafe { f(self.ptr) }, "fmi3ExitConfigurationMode")
     }
 
     /// Result of `fmi3UpdateDiscreteStates` — returned to the caller so it
@@ -569,7 +842,10 @@ impl Instance<Cs> {
     /// time. Useful for interpolating outputs at times between communication
     /// points. Returns an error if the FMU doesn't export this function or if
     /// any of the named variables has `maxOutputDerivativeOrder` less than the
-    /// requested order. `values.len()` must equal `vrs.len() == orders.len()`.
+    /// requested order. `orders` carries one entry per value reference, while
+    /// `values.len()` is `nValues` — the total element count across the
+    /// referenced variables, which exceeds `vrs.len()` when any of them is an
+    /// array.
     pub fn get_output_derivatives(
         &self,
         vrs: &[fmi3ValueReference],
@@ -577,7 +853,7 @@ impl Instance<Cs> {
         values: &mut [f64],
     ) -> Result<()> {
         debug_assert_eq!(vrs.len(), orders.len());
-        debug_assert_eq!(vrs.len(), values.len());
+        debug_assert!(values.len() >= vrs.len());
         let f = self.fns.get_output_derivatives.ok_or_else(|| {
             crate::fmi::FmiError::ModelDescription(
                 "fmi3GetOutputDerivatives not exported by FMU".into(),
