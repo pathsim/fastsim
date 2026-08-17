@@ -842,10 +842,10 @@ fn generated_struct_api_with_events() {
          \x20   return 0;\n}\n";
     match compile_and_run_files(&cc, 26, main, &files).expect("compile struct-events model") {
         None => eprintln!("struct-events exe would not launch — skipping numeric check"),
-        // 5.49 (not the ideal 5.5): the k-th tick lands one step late because
-        // `0.01` summed ten times is one ULP below `0.1`, matching the runtime
-        // scheduler bit-for-bit (see `generated_periodic_event_counter`).
-        Some(got) => assert!((got[0] - 5.49).abs() < 1e-6, "struct events: C={} expected=5.49", got[0]),
+        // The ideal 5.5: the schedule's drift allowance (pathsim#249) fires
+        // each tick on its ideal step although `0.01` summed ten times is one
+        // ULP below `0.1` (see `generated_periodic_event_counter`).
+        Some(got) => assert!((got[0] - 5.5).abs() < 1e-6, "struct events: C={} expected=5.5", got[0]),
     }
 }
 
@@ -1285,10 +1285,11 @@ fn generated_memory_read() {
 /// (period 0.1) does `c' = c + 1`; its output feeds an integrator, so
 /// dx/dt = c(t) is a staircase. The event fires at the first step whose
 /// accumulated time reaches `k·0.1` — bit-identical to the runtime scheduler.
-/// At dt = 0.01, `0.01` summed ten times is `0.09999999999999999`, one ULP below
-/// `0.1`, so the k-th tick lands one step late (t ≈ k·0.1 + 0.01) exactly as the
-/// reference runtime does. That shifts the staircase by one step versus the ideal
-/// 5.5, giving 5.49 — the point being SiL parity with the runtime, not the ideal.
+/// At dt = 0.01, `0.01` summed ten times is one ULP below `0.1`; the schedule's
+/// drift allowance (pathsim#249) counts that step as containing the tick, so
+/// every tick fires on its ideal step — in the C and in the runtime alike —
+/// and the staircase integrates to the ideal 5.5. (Before the allowance both
+/// sides fired one step late, giving 5.49; the point is SiL parity either way.)
 #[test]
 fn generated_periodic_event_counter() {
     let counter = Block {
@@ -1380,7 +1381,7 @@ fn generated_periodic_event_counter() {
         None => eprintln!("event exe would not launch — skipping numeric check"),
         Some(got) => {
             assert_eq!(got.len(), 1);
-            assert!((got[0] - 5.49).abs() < 1e-6, "event counter: C={} expected=5.49", got[0]);
+            assert!((got[0] - 5.5).abs() < 1e-6, "event counter: C={} expected=5.5", got[0]);
         }
     }
 }

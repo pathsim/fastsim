@@ -95,7 +95,7 @@ fn bouncing_ball_event_indicator_sign_changes() {
 
 #[test]
 fn cs_block_schedule_event_advances_state() {
-    let blk = cosimulation_fmu(DAHLQUIST_FMU, "cs", None, Some(0.01), false)
+    let blk = cosimulation_fmu(DAHLQUIST_FMU, "cs", None, Some(0.01), None, false)
         .expect("construct CS block");
 
     // Schedule event is installed with t_period = dt = 0.01.

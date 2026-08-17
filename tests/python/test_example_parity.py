@@ -79,6 +79,30 @@ KNOWN_RUN_GAPS = {
 }
 
 
+def _pathsim_predates_schedule_drift_fix():
+    """True while the installed pathsim still resolves a scheduled tick at the
+    drifted time (pre pathsim#249). fastsim carries the fix, so
+    Schedule-clocked examples disagree until pathsim releases it."""
+    import pathsim.events as pe
+
+    evt = pe.Schedule(t_start=0.0, t_period=0.01)
+    evt.resolve(0.005)
+    return abs(evt._times[0] - 0.0) > 1e-12
+
+
+# Examples that run under both engines but disagree in VALUE while the
+# installed pathsim predates a fix fastsim already carries. Same discipline as
+# KNOWN_RUN_GAPS: xfail(strict=True), so a released fix forces the entry out.
+KNOWN_VALUE_GAPS = (
+    {
+        "example_sar.py": "SAR ADC is Schedule-clocked; installed pathsim "
+                          "predates the tick-timing fix (pathsim#249)",
+    }
+    if HAS_PATHSIM and _pathsim_predates_schedule_drift_fix()
+    else {}
+)
+
+
 def _examples_dir():
     """Locate pathsim's examples/.
 
@@ -249,7 +273,8 @@ KNOWN_TRAJECTORY_GAPS = {
 
 @pytest.mark.skipif(not EXAMPLES, reason="pathsim examples/ not found")
 @pytest.mark.parametrize(
-    "path", [_param(p, gaps={**KNOWN_RUN_GAPS, **KNOWN_TRAJECTORY_GAPS}) for p in EXAMPLES])
+    "path", [_param(p, gaps={**KNOWN_RUN_GAPS, **KNOWN_TRAJECTORY_GAPS,
+                             **KNOWN_VALUE_GAPS}) for p in EXAMPLES])
 def test_example_matches_pathsim(path):
     """The recorded trajectories agree between the engines."""
     try:

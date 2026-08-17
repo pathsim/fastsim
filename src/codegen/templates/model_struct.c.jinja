@@ -65,13 +65,13 @@ void {{ name }}_handle_events({{ name }}_t * restrict m, {{ real }} dt) {
 {% endif %}
 {% for e in events %}
 {% if e.kind == "periodic" %}
-    while ({{ e.phase }} + ({{ real }})m->k_{{ e.suffix }} * {{ e.period }} <= m->time + {{ evt_tol }}) {
+    while ({{ e.phase }} + ({{ real }})m->k_{{ e.suffix }} * {{ e.period }} <= m->time + {{ e.tol_expr }}) {
         effect_{{ e.suffix }}(m);
         m->k_{{ e.suffix }}++;
     }
 {% elif e.kind == "fixed" %}
     static const {{ real }} times_{{ e.suffix }}[] = { {{ e.times | join(", ") }} };
-    while (m->fi_{{ e.suffix }} < {{ e.times | length }} && times_{{ e.suffix }}[m->fi_{{ e.suffix }}] <= m->time + {{ evt_tol }}) {
+    while (m->fi_{{ e.suffix }} < {{ e.times | length }} && times_{{ e.suffix }}[m->fi_{{ e.suffix }}] <= m->time + {{ e.tol_expr }}) {
         effect_{{ e.suffix }}(m);
         m->fi_{{ e.suffix }}++;
     }

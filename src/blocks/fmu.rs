@@ -975,6 +975,7 @@ pub fn cosimulation_fmu(
     instance_name: &str,
     start_values: Option<HashMap<String, Vec<f64>>>,
     dt: Option<f64>,
+    tolerance: Option<f64>,
     verbose: bool,
 ) -> Result<BlockRef> {
     // --- 1. extract + parse ---
@@ -1018,12 +1019,21 @@ pub fn cosimulation_fmu(
         Some(o) => apply_structural_overrides(&inst, &mut md, o)?,
         None => Vec::new(),
     };
+    // The tolerance handed to `fmi3EnterInitializationMode` guides the FMU's
+    // internal solver in Co-Simulation (FMI 3.0 §2.3.1). An explicit argument
+    // wins; otherwise prefer the tolerance the exporting tool declared in
+    // `DefaultExperiment` — the accuracy the model was validated at — over our
+    // generic fallback. FMPy resolves it the same way, which keeps
+    // cross-importer comparisons meaningful.
+    let tolerance = tolerance
+        .or(md.default_experiment.tolerance)
+        .unwrap_or(FMI_INITIALIZATION_TOL);
     let _init_update = run_initialization(
         &inst,
         &md,
         &start_values,
         &structural,
-        Some(FMI_INITIALIZATION_TOL),
+        Some(tolerance),
         event_mode_used,
     )?;
     if event_mode_used {

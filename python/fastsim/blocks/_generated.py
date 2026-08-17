@@ -316,7 +316,7 @@ class AntiWindupPID(_ShimBlock):
     _param_defaults = {'Kp': 0.0, 'Ki': 0.0, 'Kd': 0.0, 'f_max': 100.0, 'Ks': 10.0, 'limits': None}
     input_port_labels = {'in': 0}
     output_port_labels = {'out': 0}
-    def __init__(self, Kp=0.0, Ki=0.0, Kd=0.0, f_max=100.0, Ks=10.0, limits=...):
+    def __init__(self, Kp=0.0, Ki=0.0, Kd=0.0, f_max=100.0, Ks=10.0, limits=None):
         super().__init__()
         self._shim_init({"Kp": Kp, "Ki": Ki, "Kd": Kd, "f_max": f_max, "Ks": Ks, "limits": limits})
 
@@ -697,12 +697,12 @@ class CoSimulationFMU(_ShimBlock):
         forward the FMU's internal log messages to stdout (default ``False``)
     """
     _factory_name = "CoSimulationFMU"
-    _param_defaults = {'fmu_path': None, 'instance_name': 'fmu_instance', 'start_values': None, 'dt': None, 'verbose': False}
+    _param_defaults = {'fmu_path': None, 'instance_name': 'fmu_instance', 'start_values': None, 'dt': None, 'tolerance': None, 'verbose': False}
     input_port_labels = None
     output_port_labels = None
-    def __init__(self, fmu_path=..., instance_name='fmu_instance', start_values=None, dt=None, verbose=False):
+    def __init__(self, fmu_path=..., instance_name='fmu_instance', start_values=None, dt=None, tolerance=None, verbose=False):
         super().__init__()
-        self._shim_init({"fmu_path": fmu_path, "instance_name": instance_name, "start_values": start_values, "dt": dt, "verbose": verbose})
+        self._shim_init({"fmu_path": fmu_path, "instance_name": instance_name, "start_values": start_values, "dt": dt, "tolerance": tolerance, "verbose": verbose})
 
 
 class Comparator(_ShimBlock):
@@ -2179,7 +2179,8 @@ class Mod(_ShimBlock):
 
 class ModelExchangeFMU(_ShimBlock):
     """
-    ModelExchangeFMU block
+        ModelExchangeFMU block
+
     """
     _factory_name = "ModelExchangeFMU"
     _param_defaults = {'fmu_path': None, 'instance_name': 'fmu_instance', 'start_values': None, 'tolerance': 1e-10, 'verbose': False}

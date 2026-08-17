@@ -156,7 +156,7 @@ fn bouncing_ball_cs_event_mode() {
     use fastsim::blocks::fmu::cosimulation_fmu;
 
     // Small dt so the FMU detects the bounce precisely.
-    let fmu = cosimulation_fmu(BOUNCING_BALL_FMU, "bb_cs", None, Some(1e-2), false).expect("ctor");
+    let fmu = cosimulation_fmu(BOUNCING_BALL_FMU, "bb_cs", None, Some(1e-2), None, false).expect("ctor");
     let scp = scope(None, 0.0, vec!["h".into(), "v".into()]);
     let conn_h = connect_port(&fmu, 0, &scp, 0);
     let conn_v = connect_port(&fmu, 1, &scp, 1);

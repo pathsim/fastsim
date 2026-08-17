@@ -42,14 +42,19 @@ def test_ideal_pulse_is_exactly_two_valued():
 def test_falling_edge_lands_on_its_exact_instant():
     """duty=0.5, T=1 is `amplitude` on [0, 0.5) and 0 on [0.5, 1).
 
-    Checked against the sample times themselves rather than a nominal grid:
-    accumulated stepping puts a sample at 1.4999999999999456, which is still
-    (correctly) the high phase. What must hold is that the FIRST sample at or
-    after the edge is low, and the last one before it is high.
+    Accumulated stepping puts a sample at 1.4999999999999456 — a few hundred
+    ulp of clock drift below the nominal edge. Schedule detection absorbs that
+    drift (pathsim#249): a step ending within the drift tolerance of the edge
+    IS the edge, so that sample already reads the low phase. Without the
+    allowance the edge fired one full step late. What must hold is that the
+    first sample at or after the drift-corrected edge is low, and the one
+    before it is high.
     """
     t, y = _run(amplitude=1.0, T=1.0)
     for edge in (0.5, 1.5):
-        after = np.nonzero(t >= edge)[0]
+        # the same drift allowance the schedule uses
+        tol = 1e-10 * edge
+        after = np.nonzero(t >= edge - tol)[0]
         assert len(after) and after[0] > 0, f"no samples bracket the edge at {edge}"
         i = int(after[0])
         assert t[i] - edge < DT, "no sample close enough after the edge"

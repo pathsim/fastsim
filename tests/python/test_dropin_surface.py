@@ -217,7 +217,25 @@ def test_declared_events_are_not_registered_twice():
     assert len(fired) == len(set(fired)) == 6, f"fired at {fired}"
 
 
+def _pathsim_predates_schedule_drift_fix():
+    """True while the installed pathsim still resolves a scheduled tick at the
+    drifted time (pre pathsim#249), which shifts which step a drift-boundary
+    tick fires on and desynchronizes the counter below."""
+    if not HAS_PATHSIM:
+        return False
+    import pathsim.events as pe
+
+    evt = pe.Schedule(t_start=0.0, t_period=0.01)
+    evt.resolve(0.005)
+    return abs(evt._times[0] - 0.0) > 1e-12
+
+
 @pytest.mark.skipif(not HAS_PATHSIM, reason="pathsim not installed")
+@pytest.mark.xfail(
+    condition=_pathsim_predates_schedule_drift_fix(),
+    reason="installed pathsim predates the schedule drift fix (pathsim#249)",
+    strict=True,
+)
 def test_python_block_matches_pathsim():
     got = _run_counter(fs, Block, Schedule)
     ref = _run_counter(ps, PBlock, PSchedule)

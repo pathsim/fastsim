@@ -27,12 +27,18 @@ The cross-check repository itself covers FMI 1.0 and 2.0 only, so these cannot
 be submitted there; the layout is flat (`fmus/{model}/`) rather than the nested
 `{version}/{type}/{platform}/{tool}/{version}/` tree that repository uses.
 
-## These are source FMUs
+## Sources and binaries
 
 FastSim exports **source FMUs**: the archive carries the generated C together
-with a `buildDescription.xml`, and no pre-compiled binary. The importing tool
-compiles it for its own platform, which is why the same archive works
-everywhere. FMPy does this in one call:
+with a `buildDescription.xml`, so any importing tool can compile it for its own
+platform. The published archives here additionally embed pre-built binaries
+for:
+
+- `x86_64-windows`
+- `x86_64-linux`
+
+so tools without a C toolchain can use them directly. On other platforms the
+sources still compile locally — FMPy does it in one call:
 
 ```python
 from fmpy.build import build_platform_binary
@@ -44,10 +50,12 @@ Exchange and Co-Simulation.
 
 ## Reproducing
 
-Regenerate the artifacts:
+Regenerate the artifacts, then embed the platform binaries (the second step
+needs a local C compiler for the Windows build and Docker for the Linux one):
 
 ```
 python scripts/export_reference_fmus.py
+python scripts/add_fmu_binaries.py
 ```
 
 Check them the way an importing tool would — validate, compile, simulate in both

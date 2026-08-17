@@ -99,6 +99,21 @@ def _schedule_fires_a_step_early():
     return bool(fired) and abs(fired[0] - 0.05) > 1e-9
 
 
+def _schedule_stamps_the_drifted_time():
+    """pathsim <=0.24.0 stamped `resolve(t)` with the numerically drifted time
+    it was handed, and dropped a tick that landed a few ulp behind a step
+    boundary (clock drift pushed it into the next step, and the final tick of a
+    run off the end). Fixed upstream (pathsim#249) and ported here: `Schedule`
+    absorbs the drift in `detect` and resolves at the exact scheduled time —
+    which is why every Schedule-clocked block disagrees with an installed
+    pathsim that predates the fix."""
+    import pathsim.events as pe
+
+    evt = pe.Schedule(t_start=0.0, t_period=0.01)
+    evt.resolve(0.005)  # off-schedule resolve time
+    return abs(evt._times[0] - 0.0) > 1e-12
+
+
 def _pending(name, probe, reason):
     """``{name: reason}`` while the installed pathsim still shows the old
     behaviour, ``{}`` once it no longer does."""
@@ -164,10 +179,24 @@ SIGNATURE_MISMATCH = {
                "pathsim rejects a nested list for `A`; fixed upstream"),
 }
 
+_SCHEDULE_DRIFT_REASON = (
+    "pathsim resolves a drift-boundary tick one step later and stamps the "
+    "drifted time; fixed upstream (pathsim#249)"
+)
+
 # Confirmed VALUE disagreements, each with the side that is wrong and why.
 # `strict=True`: when a fix lands, the unexpected pass fails the suite so the
 # entry has to be removed — the list cannot rot into a permanent excuse.
 KNOWN_DIVERGENCE = {
+    # Every Schedule-clocked block, in one stroke: the tick-timing fix
+    # (pathsim#249) moves which step a drift-boundary tick fires on, so all of
+    # them disagree with a pre-fix pathsim and agree again once it releases.
+    **{k: v for name in (
+        "ADC", "Delay", "DiscreteDerivative", "DiscreteIntegrator",
+        "DiscreteStateSpace", "DiscreteTransferFunction", "FIR", "SampleHold",
+        "StepSource", "TappedDelay", "Wrapper", "ZeroOrderHold",
+    ) for k, v in _pending(name, _schedule_stamps_the_drifted_time,
+                           _SCHEDULE_DRIFT_REASON).items()},
     # Verified to agree exactly once pathsim carries the fix, so this entry is
     # present only while the installed one does not.
     **_pending("Relay", _relay_starts_at_zero,

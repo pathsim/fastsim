@@ -367,7 +367,7 @@ fn clocks_fmu_rejected_for_me() {
 
 #[test]
 fn clocks_fmu_rejected_for_cs() {
-    let err = cosimulation_fmu(fmu("Clocks"), "c", None, None, false).err();
+    let err = cosimulation_fmu(fmu("Clocks"), "c", None, None, None, false).err();
     assert!(
         matches!(err, Some(FmiError::ModelDescription(_))),
         "expected ModelDescription error for CS on Clocks FMU, got {:?}",
@@ -394,7 +394,7 @@ fn co_simulation_without_event_mode_runs_in_step_mode() {
             "{name} was expected to leave hasEventMode unset"
         );
 
-        let blk = cosimulation_fmu(fmu(name), "step_mode", None, dt, false)
+        let blk = cosimulation_fmu(fmu(name), "step_mode", None, dt, None, false)
             .unwrap_or_else(|e| panic!("CS ctor for {name} failed: {e:?}"));
 
         // Drive one communication step through the scheduled event, then pull
@@ -420,7 +420,7 @@ fn cs_instantiation_for_all_supporting_fmus() {
         ("Stair", None),
         ("VanDerPol", Some(0.1)),
     ] {
-        let res = cosimulation_fmu(fmu(name), "cs_smoke", None, dt, false);
+        let res = cosimulation_fmu(fmu(name), "cs_smoke", None, dt, None, false);
         assert!(res.is_ok(), "CS ctor for {name} failed: {:?}", res.err());
     }
 }

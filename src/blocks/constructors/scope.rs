@@ -30,21 +30,9 @@ pub fn scope(sampling_period: Option<f64>, t_wait: f64, labels: Vec<String>) -> 
 
     b.len_fn = Some(Box::new(|_| 0));
 
-    // If sampling_period is set, use Schedule event for discrete sampling
-    let sample_flag = Rc::new(FastCell::new(false));
     let has_sampling_period = sampling_period.is_some();
-
     if let Some(sp) = sampling_period {
         b.data_f64.insert("sampling_period".to_string(), sp);
-
-        use crate::events::schedule::Schedule;
-        let flag = sample_flag.clone();
-        let evt = Schedule::new(
-            t_wait, None, sp,
-            Some(Box::new(move |_t| { *flag.borrow_mut() = true; })),
-            crate::constants::TOLERANCE,
-        );
-        b.events.push(Rc::new(FastCell::new(evt)));
     }
 
     b.reset_fn = Some(Box::new(|blk| {
@@ -55,33 +43,50 @@ pub fn scope(sampling_period: Option<f64>, t_wait: f64, labels: Vec<String>) -> 
         if let Some(idx) = blk.data_f64.get_mut("_read_idx") { *idx = 0.0 }
     }));
 
-    let sample_flag_fn = sample_flag.clone();
+    // Per-timestep recording; only active without a sampling period. With one,
+    // the Schedule event below records in its action instead, stamped with the
+    // scheduled time rather than the end of the enclosing timestep.
     b.sample_fn = Some(Box::new(move |blk, t, _dt| {
+        if has_sampling_period { return; }
         let t_wait = blk.data_f64.get("t_wait").copied().unwrap_or(0.0);
-
-        // Determine if we should sample
-        let should_sample = if has_sampling_period {
-            let flag = *sample_flag_fn.borrow();
-            if flag { *sample_flag_fn.borrow_mut() = false; true } else { false }
-        } else {
-            t >= t_wait
-        };
-
-        if !should_sample { return; }
-
-        // Skip duplicate timestamps
-        if let Some(times) = blk.data_vec.get("recording_time") {
-            if let Some(&last) = times.last() {
-                if last == t { return; }
-            }
+        if t >= t_wait {
+            record(blk, t);
         }
-
-        let data = blk.inputs._data.clone();
-        if let Some(v) = blk.data_vec.get_mut("recording_time") { v.push(t) }
-        if let Some(v) = blk.data_vec2.get_mut("recording_data") { v.push(data) }
     }));
 
-    Rc::new(FastCell::new(b))
+    let blk_ref: BlockRef = Rc::new(FastCell::new(b));
+
+    // Event-based sampling records directly in the Schedule action so the
+    // timestamps are the scheduled times and no tick can be lost (a flag
+    // deferred to the end of the timestep collapses two ticks that land in
+    // one step into a single sample). Upstream: pathsim#249. The action holds
+    // the block, forming the (documented) closure/event Rc cycle used
+    // throughout the constructors.
+    if let Some(sp) = sampling_period {
+        use crate::events::schedule::Schedule;
+        let blk_evt = blk_ref.clone();
+        let evt = Schedule::new(
+            t_wait, None, sp,
+            Some(Box::new(move |t| record(blk_evt.borrow_mut(), t))),
+            crate::constants::TOLERANCE,
+        );
+        blk_ref.borrow_mut().events.push(Rc::new(FastCell::new(evt)));
+    }
+
+    blk_ref
+}
+
+/// Append one sample of all inputs at time `t`, skipping duplicate timestamps
+/// to keep the recording's time points unique.
+fn record(blk: &mut Block, t: f64) {
+    if let Some(times) = blk.data_vec.get("recording_time") {
+        if times.last() == Some(&t) {
+            return;
+        }
+    }
+    let data = blk.inputs._data.clone();
+    if let Some(v) = blk.data_vec.get_mut("recording_time") { v.push(t) }
+    if let Some(v) = blk.data_vec2.get_mut("recording_data") { v.push(data) }
 }
 
 /// Read recorded data from a Scope block.

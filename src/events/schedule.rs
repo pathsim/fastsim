@@ -4,14 +4,29 @@
 use crate::constants::TOLERANCE;
 use crate::events::active::{active_flag, ActiveFlag};
 
+/// Effective detection tolerance at evaluation time `t`.
+///
+/// The simulation time is accumulated by repeated addition of the timestep, so
+/// it drifts away from the exact schedule times by a floating point error that
+/// grows with `t`. The configured absolute tolerance cannot cover this, which
+/// makes ticks that land within a few ulp of a step boundary flip between
+/// neighboring timesteps and lose the final tick of a run. The widened
+/// tolerance absorbs that drift while staying far below the schedule spacing,
+/// so no genuine tick can be swallowed. Upstream: pathsim#249.
+fn tolerance_at(tolerance: f64, t: f64, spacing: f64) -> f64 {
+    tolerance.max((1e-10 * t.abs()).min(0.1 * spacing))
+}
+
 /// Shared `detect` tail for time-scheduled events: given the next scheduled time
 /// `t_next`, the current time `t`, the buffered previous time `history_t`, and
-/// the close-enough `tolerance`, decide `(detected, close_enough, ratio)`. Both
-/// `Schedule` and `ScheduleList` call this after computing their own `t_next`
-/// and end-of-schedule condition.
+/// the close-enough `tolerance` (already widened via `tolerance_at`), decide
+/// `(detected, close_enough, ratio)`. Both `Schedule` and `ScheduleList` call
+/// this after computing their own `t_next` and end-of-schedule condition.
 fn detect_at(t_next: f64, t: f64, history_t: f64, tolerance: f64) -> (bool, bool, f64) {
-    // No event yet.
-    if t_next > t {
+    // No event yet. A tick within tolerance of the step end counts as inside
+    // the step — otherwise clock drift pushes it into the next step and the
+    // final tick of a run is lost (pathsim#249).
+    if t_next > t + tolerance {
         return (false, false, 1.0);
     }
     // Close enough to the sample. `t` is the END of the step and the caller
@@ -98,13 +113,20 @@ impl Schedule {
             }
         }
 
-        detect_at(t_next, t, self._history.1, self.tolerance)
+        let tol = tolerance_at(self.tolerance, t, self.t_period);
+        detect_at(t_next, t, self._history.1, tol)
     }
 
-    pub fn resolve(&mut self, t: f64) {
-        self._times.push(t);
+    /// Resolve at the exact scheduled time. The caller passes the numerically
+    /// reached time, which carries the accumulated drift of the simulation
+    /// clock; the schedule knows its own exact event time, so that is what
+    /// gets recorded and handed to the action — timestamps land exactly on
+    /// the schedule. Upstream: pathsim#249.
+    pub fn resolve(&mut self, _t: f64) {
+        let t_evt = self._next();
+        self._times.push(t_evt);
         if let Some(ref mut func) = self.func_act {
-            func(t);
+            func(t_evt);
         }
     }
 }
@@ -170,6 +192,17 @@ impl ScheduleList {
         self._history = (None, t);
     }
 
+    /// Gap between the upcoming event and its successor in the time list,
+    /// used to bound the effective detection tolerance.
+    fn spacing(&self) -> f64 {
+        let n = self._times.len();
+        if n + 1 < self.times_evt.len() {
+            self.times_evt[n + 1] - self.times_evt[n]
+        } else {
+            f64::INFINITY
+        }
+    }
+
     pub fn detect(&mut self, t: f64) -> (bool, bool, f64) {
         let n = self._times.len();
         if n >= self.times_evt.len() {
@@ -178,13 +211,16 @@ impl ScheduleList {
         }
 
         let t_next = self._next();
-        detect_at(t_next, t, self._history.1, self.tolerance)
+        let tol = tolerance_at(self.tolerance, t, self.spacing());
+        detect_at(t_next, t, self._history.1, tol)
     }
 
-    pub fn resolve(&mut self, t: f64) {
-        self._times.push(t);
+    /// Resolve at the exact scheduled time — see `Schedule::resolve`.
+    pub fn resolve(&mut self, _t: f64) {
+        let t_evt = self._next();
+        self._times.push(t_evt);
         if let Some(ref mut func) = self.func_act {
-            func(t);
+            func(t_evt);
         }
     }
 }
@@ -318,5 +354,50 @@ mod tests {
             TOLERANCE,
         );
         assert!(s.func_act.is_some());
+    }
+
+    // --- drift handling (pathsim#249) ----------------------------------
+
+    #[test]
+    fn resolve_records_the_exact_scheduled_time() {
+        // The caller passes the numerically reached time, which carries the
+        // accumulated drift of the simulation clock; the schedule records its
+        // own exact event time instead.
+        let mut s = Schedule::new(0.0, None, 0.01, None, TOLERANCE);
+        s.resolve(0.0);
+        s.resolve(0.010000000000000002); // one ulp of drift
+        s.resolve(0.020000000000000004);
+        assert_eq!(s._times, vec![0.0, 0.01, 0.02]);
+    }
+
+    #[test]
+    fn detect_absorbs_clock_drift_at_the_step_boundary() {
+        // A tick landing a few ulp behind the end of the step must still be
+        // detected in that step (close, ratio 1), otherwise clock drift pushes
+        // it into the next step and the final tick of a run is lost.
+        let mut s = Schedule::new(0.0, None, 0.01, None, TOLERANCE);
+        s._times = vec![0.0; 10]; // ten ticks resolved, next is t=0.1
+        let t_drifted = f64::from_bits(0.1f64.to_bits() - 1); // one ulp below
+        assert!(t_drifted < 0.1);
+        s.buffer(t_drifted - 0.01);
+        let (d, c, r) = s.detect(t_drifted);
+        assert!(d);
+        assert!(c);
+        assert_eq!(r, 1.0);
+    }
+
+    #[test]
+    fn drift_tolerance_is_capped_by_the_spacing() {
+        // The allowance must stay far below the schedule spacing so no genuine
+        // tick can be absorbed by the widened tolerance.
+        assert!(tolerance_at(TOLERANCE, 1e6, 1e-12) <= 0.1e-12);
+    }
+
+    #[test]
+    fn schedule_list_resolves_at_the_listed_times() {
+        let mut s = ScheduleList::new(vec![1.0, 2.0], None, TOLERANCE);
+        s.resolve(1.0000000000000002);
+        s.resolve(2.0000000000000004);
+        assert_eq!(s._times, vec![1.0, 2.0]);
     }
 }

@@ -16,6 +16,15 @@ use super::{assemble_sim_event, CompiledEvent};
 struct EventScratch {
     x: Vec<f64>,
     m: Vec<f64>,
+    /// The time the engine's state (`x`) currently corresponds to — the end of
+    /// the step during event resolution. Effect tapes re-evaluate inputs at
+    /// this time rather than at the time `resolve` hands to the action:
+    /// `Schedule::resolve` passes the exact *scheduled* time (pathsim#249),
+    /// which for a mid-step tick under fixed stepping lies up to `dt` before
+    /// the state — evaluating the tape there would pair the step-end state
+    /// with an earlier input, and diverge from the generated C, which fires
+    /// effects at the step boundary.
+    t_eval: f64,
 }
 
 /// A statically compiled system: the fused `dX/dt = F(X, t)` plus the global
@@ -638,10 +647,12 @@ impl CompiledSimulation {
                 let sh = shared.clone();
                 let eff = ce.effect.clone();
                 let tgts = ce.targets.clone();
-                Box::new(move |t: f64| {
+                Box::new(move |_t: f64| {
+                    // Evaluate at the engine's state time, not the scheduled
+                    // time the action receives — see `EventScratch::t_eval`.
                     let outs = {
                         let s = sh.borrow();
-                        eff.call(&[&s.x, &s.m, &[t]])
+                        eff.call(&[&s.x, &s.m, &[s.t_eval]])
                     };
                     let s = sh.borrow_mut();
                     for (val, tgt) in outs.iter().zip(tgts.iter()) {
@@ -706,7 +717,11 @@ impl CompiledSimulation {
                 None
             };
 
-        let shared = Rc::new(FastCell::new(EventScratch { x: self.x.clone(), m: self.m.clone() }));
+        let shared = Rc::new(FastCell::new(EventScratch {
+            x: self.x.clone(),
+            m: self.m.clone(),
+            t_eval: time,
+        }));
         let sim_events = self.build_sim_events(&shared);
 
         // Resolve events already active at the start time (e.g. Schedule@phase 0).
@@ -792,7 +807,9 @@ impl CompiledSimulation {
                 sh.x.copy_from_slice(&s.x);
             }
 
-            // Detect events over the step.
+            // Detect events over the step. The scratch state is the step end
+            // now; effects fired below must evaluate there too.
+            shared.borrow_mut().t_eval = t_new;
             let mut detected: Vec<(usize, bool, f64)> = Vec::new();
             for (i, e) in sim_events.iter().enumerate() {
                 let (det, close, ratio) = e.borrow_mut().detect(t_new);

@@ -120,6 +120,10 @@ pub(super) fn ModelExchangeFMU(
 /// dt : float, optional
 ///     Communication step size. If `None`, `DefaultExperiment.stepSize` from
 ///     the FMU is used; an error is raised if neither is available.
+/// tolerance : float, optional
+///     Relative tolerance passed to `fmi3EnterInitializationMode`, guiding the
+///     FMU's internal solver. Defaults to `DefaultExperiment.tolerance` from
+///     the FMU, falling back to 1e-6.
 /// verbose : bool, optional
 ///     Forward INFO/WARNING log messages from the FMU's logger callback to
 ///     stderr (default: False).
@@ -129,6 +133,7 @@ pub(super) fn ModelExchangeFMU(
     instance_name = "fmu_instance",
     start_values = None,
     dt = None,
+    tolerance = None,
     verbose = false,
 ))]
 #[allow(non_snake_case)]
@@ -137,6 +142,7 @@ pub(super) fn CoSimulationFMU(
     instance_name: &str,
     start_values: Option<HashMap<String, StartOverride>>,
     dt: Option<f64>,
+    tolerance: Option<f64>,
     verbose: bool,
 ) -> PyResult<PyBlock> {
     let blk = cosimulation_fmu(
@@ -144,6 +150,7 @@ pub(super) fn CoSimulationFMU(
         instance_name,
         to_start_values(start_values),
         dt,
+        tolerance,
         verbose,
     )
         .map_err(fmi_err_to_py)?;

@@ -1876,13 +1876,6 @@ struct StructCtx {
     /// `0.5 * dt`, numeric-aware (`(dt >> 1)` under fixed point) — the step
     /// tolerance used by the discrete run loop's end-of-horizon guard.
     half_dt: String,
-    /// Event-firing slack added to `m->time` in the schedule tests. Zero for
-    /// `double`/fixed point, where the clock is exact and a strict `<=` fires an
-    /// event on precisely the step the (double) reference runtime does — the SiL
-    /// bit-parity contract. For `float`, `m->time` accumulates in single precision
-    /// and drifts from the double reference, so a half-step slack keeps the fired
-    /// step aligned with the reference despite the drift.
-    evt_tol: String,
     /// Fractional bits under fixed point (`None` for double/float): drives
     /// the `<NAME>_Q_*` conversion macros in the emitted header.
     fixed_frac: Option<u8>,
@@ -2484,7 +2477,7 @@ fn build_struct_ctx(module: &Module, opts: &CodegenOptions) -> R<StructCtx> {
 
     // Events: effect/guard functions, per-event template contexts, struct
     // counter fields, and their init lines (appended to model_init).
-    let ev = build_struct_events(&plan, &target, &param_off, &model_name, &events, &lit)?;
+    let ev = build_struct_events(&plan, &target, &param_off, &model_name, &events, opts.numeric, &lit)?;
     for line in &ev.inits {
         init_body.push_str(line);
         init_body.push('\n');
@@ -2541,13 +2534,6 @@ fn build_struct_ctx(module: &Module, opts: &CodegenOptions) -> R<StructCtx> {
             Some(_) => "(dt >> 1)".to_string(),
             None => format!("{} * dt", lit(0.5)),
         },
-        evt_tol: match opts.numeric {
-            // Exact clock: strict `<=` fires on the same step as the runtime.
-            Numeric::Double | Numeric::Fixed { .. } => "0".to_string(),
-            // Single-precision clock drifts from the double reference; a half-step
-            // slack keeps the fired step aligned despite the drift.
-            Numeric::Float => format!("{} * dt", lit(0.5)),
-        },
         has_events: !events.is_empty(),
         need_sig_handle: ev.need_sig,
         event_fns: ev.fns,
@@ -2571,6 +2557,15 @@ struct StructEventCtx {
     times: Vec<String>,
     /// Zero-cross firing test over `cur_<suffix>` / `m->prev_<suffix>`.
     cross_cond: String,
+    /// Event-firing slack added to `m->time` in this event's schedule test.
+    /// Mirrors the runtime scheduler's drift allowance (`events::schedule::
+    /// tolerance_at`, pathsim#249): the accumulated clock drifts from the exact
+    /// schedule times by an error that grows with `t`, and without the
+    /// allowance a tick landing a few ulp behind a step boundary fires one
+    /// step later than the interpreted runtime — breaking SiL step parity.
+    /// `0` under fixed point (exact clock); `0.5*dt` under float, whose
+    /// half-step slack against the double reference already covers the drift.
+    tol_expr: String,
 }
 
 /// Emit a struct-mode event-effect function `effect_<suffix>(model_t* m)`: it
@@ -2645,6 +2640,7 @@ fn build_struct_events(
     param_off: &[usize],
     model: &str,
     events: &[EventSpec],
+    numeric: Numeric,
     lit: &impl Fn(f64) -> String,
 ) -> R<StructEvents> {
     let t = target.scalar_ty();
@@ -2665,10 +2661,28 @@ fn build_struct_events(
         let mut period = String::new();
         let mut times = Vec::new();
         let mut cross_cond = String::new();
+        // Drift allowance for the schedule test, matching the runtime's
+        // `tolerance_at` with the cap fixed at emission time. See the field
+        // doc on `StructEventCtx::tol_expr`.
+        let drift_tol = |spacing: f64| -> String {
+            if numeric.frac().is_some() {
+                "0".to_string()
+            } else if numeric == Numeric::Float {
+                format!("{} * dt", lit(0.5))
+            } else {
+                format!(
+                    "fmin({} * fabs(m->time), {})",
+                    lit(1e-10),
+                    lit(0.1 * spacing)
+                )
+            }
+        };
+        let mut tol_expr = "0".to_string();
         let kind = match ev {
             EventSpec::Periodic { period: p, phase: ph, .. } => {
                 phase = lit(*ph);
                 period = lit(*p);
+                tol_expr = drift_tol(*p);
                 // Count of events fired; the next scheduled time is recomputed as
                 // `phase + k * period` (multiplication), bit-identical to the
                 // runtime scheduler's `t_start + n * t_period` — an accumulating
@@ -2678,6 +2692,14 @@ fn build_struct_events(
                 "periodic"
             }
             EventSpec::Fixed { times: ts, .. } => {
+                // Conservative cap: the smallest gap in the list (the runtime
+                // uses the gap at the current index; a smaller allowance can
+                // only delay a tick by one step in pathological spacings).
+                let min_gap = ts
+                    .windows(2)
+                    .map(|w| w[1] - w[0])
+                    .fold(f64::INFINITY, f64::min);
+                tol_expr = drift_tol(if min_gap.is_finite() { min_gap } else { 1.0 });
                 times = ts.iter().map(|x| lit(*x)).collect();
                 fields.push(format!("    size_t fi_{suffix};"));
                 inits.push(format!("    m->fi_{suffix} = 0;"));
@@ -2701,7 +2723,7 @@ fn build_struct_events(
                 "condition"
             }
         };
-        ctxs.push(StructEventCtx { kind, suffix, phase, period, times, cross_cond });
+        ctxs.push(StructEventCtx { kind, suffix, phase, period, times, cross_cond, tol_expr });
     }
     if !events.is_empty() {
         // First-step guard for `<name>_step`: events due at the CURRENT time
