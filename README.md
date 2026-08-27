@@ -169,9 +169,9 @@ source builds only.
 ## WebAssembly / Pyodide build
 
 fastsim compiles to `wasm32-unknown-emscripten` and runs in the browser via
-[Pyodide](https://pyodide.org). The FMI feature (FMU import) relies on runtime
-dynamic-library loading and is excluded from WASM builds; everything else
-(solvers, JIT tape interpreter, all blocks) runs unchanged.
+[Pyodide](https://pyodide.org). FMU *import* relies on runtime dynamic-library
+loading and is target-gated out of WASM builds; everything else (solvers, JIT
+tape interpreter, all blocks, C codegen, FMU export) runs unchanged.
 
 ```bash
 # one-time toolchain setup

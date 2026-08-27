@@ -2,7 +2,6 @@
 //! integrate it in compiled C, and compare the trajectory to (a) an IR-level
 //! RK4 reference driven by `fastsim::ir::eval` and (b) the analytic solution.
 //! Skips when no working C compiler is available (see `common`).
-#![cfg(feature = "codegen")]
 
 use fastsim::ir::eval::{eval_region, EvalCtx};
 use fastsim::ir::schema::{

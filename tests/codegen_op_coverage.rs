@@ -5,7 +5,6 @@
 //! helpers emitted in the header. Each `all_*()` lists its enum's variants
 //! exactly once; the inner `_guard` match is exhaustive, so adding a variant to
 //! fastsim fails to compile here until it is listed too.
-#![cfg(feature = "codegen")]
 
 use fastsim::ir::schema::{
     BinOpKind, CmpKind, NodeId, Op, Region, ReduceKind, UnaryOpKind, Write,

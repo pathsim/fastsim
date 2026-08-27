@@ -35,8 +35,6 @@ pub mod ssa;
 pub mod tracer;
 pub mod ir;
 pub mod compile;
-#[cfg(feature = "codegen")]
 pub mod codegen;
-#[cfg(feature = "fmi")]
 pub mod fmi;
 pub mod pybindings;

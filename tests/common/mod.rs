@@ -10,8 +10,6 @@
 
 // Shared across several test binaries; each uses a different subset of helpers.
 #![allow(dead_code)]
-// Only used by the codegen verification tests, which are themselves gated.
-#![cfg(feature = "codegen")]
 
 use std::path::PathBuf;
 use std::process::Command;

@@ -6,7 +6,6 @@
 //! a *numeric mismatch* fails the test, since that is the one thing under the
 //! emitter's control. A *compile* error fails loudly: that means the emitted C
 //! is malformed.
-#![cfg(feature = "codegen")]
 
 use fastsim::ir::eval::{eval_region, EvalCtx};
 use fastsim::ir::schema::{

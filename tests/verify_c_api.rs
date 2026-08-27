@@ -4,7 +4,6 @@
 //! reference within the default tolerances. Negative leg: a DIFFERENT model as
 //! reference must fail — a verifier that cannot fail proves nothing.
 
-#![cfg(feature = "codegen")]
 
 mod common;
 

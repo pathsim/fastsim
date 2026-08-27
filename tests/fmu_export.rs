@@ -8,7 +8,6 @@
 //!  3. behaviour — the generated FMI C compiles, and driving the real
 //!     `fmi3*` entry points through a Model-Exchange RK4 host loop reproduces
 //!     the native fastsim trajectory (skips when no C compiler is available).
-#![cfg(all(feature = "codegen", feature = "fmi"))]
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};

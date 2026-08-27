@@ -66,14 +66,13 @@ use blocks::{
     Interface, Subsystem,
 };
 
-#[cfg(feature = "fmi")]
+// FMU import blocks (libloading) — native only.
+#[cfg(not(target_family = "wasm"))]
 mod fmi;
-#[cfg(feature = "fmi")]
+#[cfg(not(target_family = "wasm"))]
 use fmi::{ModelExchangeFMU, CoSimulationFMU};
 
-#[cfg(feature = "codegen")]
 mod codegen;
-#[cfg(feature = "codegen")]
 use codegen::generate_c;
 
 #[pymodule]
@@ -253,7 +252,7 @@ fn _fastsim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(jit_jacobian, m)?)?;
 
     // Block constructors — FMU (FMI 3.0 import)
-    #[cfg(feature = "fmi")]
+    #[cfg(not(target_family = "wasm"))]
     {
         m.add_function(wrap_pyfunction!(ModelExchangeFMU, m)?)?;
         m.add_function(wrap_pyfunction!(CoSimulationFMU, m)?)?;
@@ -261,10 +260,9 @@ fn _fastsim(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Code generation (IR JSON -> C). The in-process `Simulation.to_c` lives on
     // PySimulation; this free function serves the `fastsim.ir.Module` dataclass.
-    #[cfg(feature = "codegen")]
     m.add_function(wrap_pyfunction!(generate_c, m)?)?;
     // SIL verification support (native only: needs a local compiler + process).
-    #[cfg(all(feature = "codegen", not(target_family = "wasm")))]
+    #[cfg(not(target_family = "wasm"))]
     m.add_function(wrap_pyfunction!(codegen::find_c_compiler, m)?)?;
 
     Ok(())

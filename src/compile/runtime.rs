@@ -432,7 +432,7 @@ impl CompiledSimulation {
     /// [`run`]: CompiledSimulation::run
     /// [`set_output_stride`]: CompiledSimulation::set_output_stride
     /// [`set_max_samples`]: CompiledSimulation::set_max_samples
-    #[cfg(feature = "parallel")]
+    #[cfg(not(target_family = "wasm"))]
     pub fn run_batch(
         &self,
         param_sets: &[Vec<(String, f64)>],

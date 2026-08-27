@@ -124,7 +124,6 @@ fn golden_algebraic_loop() {
 /// IR schedule (built by the same port-granular assembly) must too, so codegen
 /// can statically order it. This used to fail with "cannot order the algebraic
 /// pass"; it must now generate.
-#[cfg(feature = "codegen")]
 #[test]
 fn codegen_orders_false_loop_through_unread_input() {
     use fastsim::blocks::block::BlockRef;

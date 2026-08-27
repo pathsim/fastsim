@@ -8,13 +8,15 @@
 
 pub mod bindings;
 pub mod callbacks;
-// FMU *export* (source-FMU generation) needs the C code generator and the
-// struct-API layout, so it is additionally gated behind the `codegen` feature.
-#[cfg(feature = "codegen")]
 pub mod export;
+// FMU *import* loads the FMU's shared library at runtime (libloading) and
+// unpacks archives to disk (tempfile) — native only. Export (source-FMU
+// generation) is pure Rust and compiles for every target.
+#[cfg(not(target_family = "wasm"))]
 pub mod instance;
 pub mod model_description;
 pub mod platform;
+#[cfg(not(target_family = "wasm"))]
 pub mod unzip;
 
 use thiserror::Error;
@@ -30,6 +32,7 @@ pub enum FmiError {
     #[error("XML parse error: {0}")]
     Xml(#[from] roxmltree::Error),
 
+    #[cfg(not(target_family = "wasm"))]
     #[error("libloading error: {0}")]
     Loading(#[from] libloading::Error),
 

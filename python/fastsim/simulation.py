@@ -223,10 +223,8 @@ class Simulation:
         :meth:`fastsim.ir.Module.to_c` for the full option list (``numeric``,
         ``reductions``, ``structure``, ``layout``, ``solver``, ``api``,
         ``scaffold`` -- the latter additionally emits ``CMakeLists.txt`` and an
-        editable ``<name>_main.c`` demo driver). The
-        code generator is built into
-        the ``fastsim`` extension under the ``codegen`` feature; if the wheel was
-        built without it, ``to_c`` raises ``AttributeError``.
+        editable ``<name>_main.c`` demo driver). The code generator is always
+        built into the ``fastsim`` extension.
 
         The generated C is self-contained C99 (libm only), reentrant by
         construction (all state lives in the instance struct), and every

@@ -471,7 +471,6 @@ impl PySimulation {
     ///
     /// Raises `ValueError` for an unknown option value and `RuntimeError` for a
     /// construct the backend cannot lower (e.g. an opaque `extern` block).
-    #[cfg(feature = "codegen")]
     #[pyo3(signature = (
         name = "model", *,
         numeric = "double",
@@ -543,7 +542,7 @@ impl PySimulation {
     /// widen ``rtol`` — a float32 target legitimately deviates from the f64
     /// reference. Raises ``RuntimeError`` when no compiler is found or the
     /// build fails, ``ValueError`` for models outside the verifiable subset.
-    #[cfg(all(feature = "codegen", not(target_family = "wasm")))]
+    #[cfg(not(target_family = "wasm"))]
     #[pyo3(signature = (
         name = "model", *,
         duration = 1.0,
@@ -629,7 +628,6 @@ impl PySimulation {
     /// The optional `start_time` / `stop_time` / `tolerance` / `step_size`
     /// populate `<DefaultExperiment>`; `instantiation_token` overrides the
     /// default `{fastsim-<id>}`.
-    #[cfg(all(feature = "codegen", feature = "fmi"))]
     #[pyo3(signature = (
         path, name = "model", *,
         start_time = None, stop_time = None, tolerance = None, step_size = None,
@@ -1782,7 +1780,7 @@ impl PyCompiledSimulation {
     /// in parallel — and the calling thread releases the GIL for the whole
     /// sweep, so other Python threads keep running. For long trajectories, set
     /// `output_stride` / `max_samples` first to bound per-run memory.
-    #[cfg(feature = "parallel")]
+    #[cfg(not(target_family = "wasm"))]
     #[pyo3(signature = (param_sets, duration, adaptive=true))]
     fn run_batch(
         &self,

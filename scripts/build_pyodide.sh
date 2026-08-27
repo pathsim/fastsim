@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Build a Pyodide (WASM/Emscripten) wheel for fastsim.
 #
-# The FMI feature pulls in libloading (runtime dlopen) and is excluded here via
-# --no-default-features; everything else (solvers, JIT tape interpreter, blocks)
-# is pure Rust and compiles to wasm32-unknown-emscripten. The codegen feature IS
-# included (minijinja is pure Rust / WASM-safe) so sim.to_c() works in the browser.
+# Same feature list as the native wheel: all functionality is always compiled,
+# and the native-only parts (FMU import via libloading, rayon threads) are
+# target-gated out of wasm32-unknown-emscripten in the source. sim.to_c() and
+# sim.to_fmu() (source-FMU export) both work in the browser.
 #
 # Prerequisites (see README "Pyodide build"):
 #   - rustup with a nightly toolchain + rust-src + wasm32-unknown-emscripten target
@@ -47,7 +47,7 @@ pyodide xbuildenv install "$PYODIDE_VERSION"
 
 # Drop the fmi feature (and libloading) for the WASM build; keep python bindings
 # and codegen (sim.to_c() in the browser).
-export MATURIN_PEP517_ARGS="--no-default-features --features python,codegen"
+export MATURIN_PEP517_ARGS="--features python"
 
 cd "$REPO_ROOT"
 echo "Building fastsim Pyodide wheel (pyodide $PYODIDE_VERSION, emcc $(emcc --version | head -1))"

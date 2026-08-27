@@ -38,7 +38,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Rust tests
-        run: cargo test --all-targets --features codegen
+        run: cargo test --all-targets
         env:
           FASTSIM_REQUIRE_CC: "1"
 

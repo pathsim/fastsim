@@ -250,7 +250,6 @@ impl PyBlock {
     /// The subsystem must be assembled first (its interface widths resolved).
     /// Raises `ValueError` on a non-subsystem block or an uncompilable interior.
     /// See `Simulation.to_fmu` for closed systems and the option list.
-    #[cfg(all(feature = "codegen", feature = "fmi"))]
     #[pyo3(signature = (
         path, name = "subsystem", *,
         start_time = None, stop_time = None, tolerance = None, step_size = None,

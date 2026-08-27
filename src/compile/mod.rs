@@ -784,7 +784,7 @@ mod tests {
     /// Issue #45: the parallel batch API runs one parameter set per thread over
     /// independent clones and returns results bit-identical to running the sweep
     /// serially (deterministic, no shared state).
-    #[cfg(feature = "parallel")]
+    #[cfg(not(target_family = "wasm"))]
     #[test]
     fn run_batch_matches_serial_sweep() {
         // i' = gain*i, i(0)=1 -> i(t) = exp(gain*t). Sweep the gain.

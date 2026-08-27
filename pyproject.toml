@@ -7,7 +7,7 @@ name = "fastsim"
 # Keep in sync with Cargo.toml `version` and python/fastsim/__init__.py
 # `__version__` — CI's "Version consistency" gate fails on drift, and the release
 # workflow rewrites all three from the git tag.
-version = "0.28.1"
+version = "0.28.2"
 description = "A fast, Rust-based block-diagram system simulation framework — drop-in replacement for pathsim"
 requires-python = ">=3.8"
 license = {text = "PolyForm-Noncommercial-1.0.0"}
@@ -27,11 +27,10 @@ testpaths = ["tests/python"]
 python_files = "test_*.py"
 
 [tool.maturin]
-# `codegen` bundles the C code generator into the wheel, so `sim.to_c()` and
-# `fastsim.ir.Module.to_c()` work out of the box (no separate extension).
-# `fmi` adds FMU import/export (`sim.to_fmu()`); it pulls in native-only deps
-# (libloading/zip/tempfile), so it is in the native wheel but excluded from the
-# WASM/Pyodide build (which sets its own feature list).
-features = ["python", "codegen", "fmi", "parallel"]
+# All functionality (codegen, FMI import/export, parallel batch) is always
+# compiled; native-only parts (FMU import via libloading, rayon threads) are
+# target-gated in the source, so the same feature list serves the native and
+# the WASM/Pyodide build.
+features = ["python"]
 module-name = "fastsim._fastsim"
 python-source = "python"
