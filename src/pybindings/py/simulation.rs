@@ -612,8 +612,8 @@ impl PySimulation {
         Ok(d)
     }
 
-    /// Export this model as a source FMU (FMI 3.0, Model Exchange) written to
-    /// `path` (conventionally `*.fmu`).
+    /// Export this model as a source FMU (FMI 3.0) written to `path`
+    /// (conventionally `*.fmu`).
     ///
     /// Builds the IR straight from the live model (the same `module_from_sim`
     /// path as `compile`/`to_c`), lowers it through the struct-API C backend,
@@ -628,8 +628,14 @@ impl PySimulation {
     /// The optional `start_time` / `stop_time` / `tolerance` / `step_size`
     /// populate `<DefaultExperiment>`; `instantiation_token` overrides the
     /// default `{fastsim-<id>}`.
+    ///
+    /// `kind` selects the advertised interfaces: `"both"` (default) exports
+    /// Model Exchange plus Co-Simulation when the simulation's solver has an
+    /// emittable tableau; `"me"` exports Model Exchange only; `"cs"` exports
+    /// Co-Simulation only and errors when the solver cannot be emitted
+    /// (implicit solvers), instead of silently baking a different one.
     #[pyo3(signature = (
-        path, name = "model", *,
+        path, name = "model", *, kind = "both",
         start_time = None, stop_time = None, tolerance = None, step_size = None,
         instantiation_token = None,
     ))]
@@ -638,6 +644,7 @@ impl PySimulation {
         &self,
         path: &str,
         name: &str,
+        kind: &str,
         start_time: Option<f64>,
         stop_time: Option<f64>,
         tolerance: Option<f64>,
@@ -654,6 +661,23 @@ impl PySimulation {
         // all. Model Exchange is unaffected either way: there the importer
         // integrates and the baked-in solver is never called.
         let solver = crate::codegen::SolverChoice::by_name(sim.engine.type_name);
+        let (model_exchange, want_cs) = match kind {
+            "both" => (true, true),
+            "me" => (true, false),
+            "cs" => (false, true),
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "kind must be 'both', 'me' or 'cs', got '{other}'"
+                )))
+            }
+        };
+        if kind == "cs" && solver.is_none() {
+            return Err(PyValueError::new_err(format!(
+                "Co-Simulation FMU needs a solver the C backend can emit; '{}' (implicit) has \
+                 no emittable tableau. Switch to an explicit solver or export kind='me'.",
+                sim.engine.type_name
+            )));
+        }
         let opts = crate::fmi::export::ExportOptions {
             model_name: None,
             instantiation_token,
@@ -666,7 +690,8 @@ impl PySimulation {
                 abs: sim.engine.tolerance_lte_abs,
                 rel: sim.engine.tolerance_lte_rel,
             }),
-            co_simulation: solver.is_some(),
+            model_exchange,
+            co_simulation: want_cs && solver.is_some(),
         };
         crate::fmi::export::export_fmu(&module, path, &opts)
             .map_err(|e| PyValueError::new_err(format!("FMU export failed: {e}")))

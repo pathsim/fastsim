@@ -53,6 +53,8 @@ pub struct ExportOptions {
     /// LTE tolerances for the emitted adaptive step controller, inherited from
     /// the source simulation so the FMU runs the same error budget.
     pub tolerances: Option<codegen::Tolerances>,
+    /// Advertise `<ModelExchange>`. Off for a Co-Simulation-only export.
+    pub model_exchange: bool,
     /// Advertise `<CoSimulation>`. Off when the source solver has no emittable
     /// equivalent: an FMU that claims Co-Simulation must integrate with the
     /// solver it was built from, not silently with a different one.
@@ -70,6 +72,7 @@ impl Default for ExportOptions {
             step_size: None,
             solver: None,
             tolerances: None,
+            model_exchange: true,
             co_simulation: true,
         }
     }
@@ -90,6 +93,11 @@ pub struct FmuFile {
 /// is the single place the artifacts are assembled; [`export_fmu_bytes`] just
 /// zips the result.
 pub fn fmu_files(module: &Module, opts: &ExportOptions) -> Result<Vec<FmuFile>> {
+    if !opts.model_exchange && !opts.co_simulation {
+        return Err(FmiError::Export(
+            "FMU export needs at least one interface (Model Exchange or Co-Simulation)".into(),
+        ));
+    }
     // The struct API is the FMI substrate: a `model_t` with `model_init` /
     // `model_deriv` / `*_get_signal` / `*_set_signal`.
     let mut cg = CodegenOptions { api: ModelApi::Struct, ..Default::default() };
@@ -143,7 +151,7 @@ pub fn fmu_files(module: &Module, opts: &ExportOptions) -> Result<Vec<FmuFile>> 
     let md = ModelDescription::new(
         model_name,
         token,
-        Some(ModelExchangeInfo {
+        opts.model_exchange.then(|| ModelExchangeInfo {
             model_identifier: model_identifier.clone(),
             needs_completed_integrator_step: events.n_indicators() > 0,
             provides_directional_derivatives: layout.jvp,

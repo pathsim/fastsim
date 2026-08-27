@@ -251,7 +251,7 @@ impl PyBlock {
     /// Raises `ValueError` on a non-subsystem block or an uncompilable interior.
     /// See `Simulation.to_fmu` for closed systems and the option list.
     #[pyo3(signature = (
-        path, name = "subsystem", *,
+        path, name = "subsystem", *, kind = "both",
         start_time = None, stop_time = None, tolerance = None, step_size = None,
         instantiation_token = None,
     ))]
@@ -260,12 +260,18 @@ impl PyBlock {
         &self,
         path: &str,
         name: &str,
+        kind: &str,
         start_time: Option<f64>,
         stop_time: Option<f64>,
         tolerance: Option<f64>,
         step_size: Option<f64>,
         instantiation_token: Option<String>,
     ) -> PyResult<()> {
+        if !matches!(kind, "both" | "me" | "cs") {
+            return Err(PyValueError::new_err(format!(
+                "kind must be 'both', 'me' or 'cs', got '{kind}'"
+            )));
+        }
         let module = crate::ir::builder::module_from_subsystem(&self.inner, name)
             .ok_or_else(|| PyValueError::new_err("to_fmu() is only supported on Subsystem blocks"))?;
         let opts = crate::fmi::export::ExportOptions {
@@ -279,7 +285,8 @@ impl PyBlock {
             // of its own, so the Co-Simulation path keeps the codegen default.
             solver: None,
             tolerances: None,
-            co_simulation: true,
+            model_exchange: kind != "cs",
+            co_simulation: kind != "me",
         };
         crate::fmi::export::export_fmu(&module, path, &opts)
             .map_err(|e| PyValueError::new_err(format!("FMU export failed: {e}")))

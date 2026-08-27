@@ -831,9 +831,9 @@ class Simulation:
         """
         return self.__dict__["_sim"].take_wct_trace()
 
-    def to_fmu(self, path, name='model', *, start_time=None, stop_time=None, tolerance=None, step_size=None, instantiation_token=None):
-        """Export this model as a source FMU (FMI 3.0, Model Exchange) written to
-        `path` (conventionally `*.fmu`).
+    def to_fmu(self, path, name='model', *, kind='both', start_time=None, stop_time=None, tolerance=None, step_size=None, instantiation_token=None):
+        """Export this model as a source FMU (FMI 3.0) written to `path`
+        (conventionally `*.fmu`).
 
         Builds the IR straight from the live model (the same `module_from_sim`
         path as `compile`/`to_c`), lowers it through the struct-API C backend,
@@ -849,6 +849,11 @@ class Simulation:
         populate `<DefaultExperiment>`; `instantiation_token` overrides the
         default `{fastsim-<id>}`.
 
+        `kind` selects the advertised interfaces: `'both'` (default) exports
+        Model Exchange plus Co-Simulation when the solver has an emittable
+        tableau; `'me'` exports Model Exchange only; `'cs'` exports
+        Co-Simulation only and raises for an implicit solver.
+
         Example
         -------
         .. code-block:: python
@@ -858,7 +863,7 @@ class Simulation:
         The written FMU imports into any FMI 3.0 tool that can build source
         FMUs; the importer compiles the shipped C on its own platform.
         """
-        return self.__dict__["_sim"].to_fmu(path, name, start_time=start_time, stop_time=stop_time, tolerance=tolerance, step_size=step_size, instantiation_token=instantiation_token)
+        return self.__dict__["_sim"].to_fmu(path, name, kind=kind, start_time=start_time, stop_time=stop_time, tolerance=tolerance, step_size=step_size, instantiation_token=instantiation_token)
 
     def to_ir_json(self, name='model'):
         """Export the assembled model as hierarchical IR (JSON). Each block is

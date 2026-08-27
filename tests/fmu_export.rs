@@ -175,6 +175,31 @@ fn exports_expected_file_set_and_parsable_description() {
 }
 
 #[test]
+fn interface_selection_gates_model_description() {
+    let m = decay_module();
+
+    // ME-only: no <CoSimulation> element.
+    let me = ExportOptions { co_simulation: false, ..Default::default() };
+    let files = fmu_files(&m, &me).unwrap();
+    let md_src = &files.iter().find(|f| f.name == "modelDescription.xml").unwrap().contents;
+    let md = ModelDescription::from_str(md_src).unwrap();
+    assert!(md.model_exchange.is_some());
+    assert!(md.co_simulation.is_none());
+
+    // CS-only: no <ModelExchange> element.
+    let cs = ExportOptions { model_exchange: false, ..Default::default() };
+    let files = fmu_files(&m, &cs).unwrap();
+    let md_src = &files.iter().find(|f| f.name == "modelDescription.xml").unwrap().contents;
+    let md = ModelDescription::from_str(md_src).unwrap();
+    assert!(md.model_exchange.is_none());
+    assert!(md.co_simulation.is_some());
+
+    // Neither interface is an error, not an empty FMU.
+    let none = ExportOptions { model_exchange: false, co_simulation: false, ..Default::default() };
+    assert!(fmu_files(&m, &none).is_err());
+}
+
+#[test]
 fn fmu_zip_extracts_through_importer_archive() {
     let m = decay_module();
     let bytes = export_fmu_bytes(&m, &ExportOptions::default()).unwrap();
