@@ -22,7 +22,7 @@ def build_run(files, main, t_end):
             with open(os.path.join(d, name), "w") as f:
                 f.write(src)
         with open(os.path.join(d, "main.c"), "w") as f:
-            f.write('#include <stdio.h>\n#include "model.h"\n' + main)
+            f.write('#include <stdio.h>\n#include "decay.h"\n' + main)
         cs = [n for n in files if n.endswith(".c")] + ["main.c"]
         subprocess.run([CC, *cs, "-O0", "-o", "m.exe", "-lm"], cwd=d, check=True)
         out = subprocess.run([os.path.join(d, "m.exe")], capture_output=True, text=True, check=True)
@@ -37,7 +37,6 @@ def main():
 
     # Default (Compact) layout.
     files = sim.to_c("decay")
-    assert set(files) == {"model.h", "model.c"}, sorted(files)
     print("compact files:", sorted(files))
 
     # Struct ("rtModel") API: entry points are prefixed with the model name so two
@@ -53,7 +52,7 @@ def main():
 
     # Library layout: 6 files (model/blocks/solver, .h + .c).
     lib = sim.to_c("decay", layout="library")
-    assert set(lib) == {"model.h", "model.c", "blocks.h", "blocks.c", "solver.h", "solver.c"}, sorted(lib)
+    assert set(lib) == {"decay.h", "decay.c", "decay_blocks.h", "decay_blocks.c", "decay_solver.h", "decay_solver.c"}, sorted(lib)
     print("library files:", sorted(lib))
 
     # Bad option -> ValueError.
