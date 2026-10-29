@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-28T09:25:22.696732",
+  "generated": "2026-10-29T09:36:09.604792",
   "categories": [
     {
       "name": "Solvers",
@@ -179,6 +179,7 @@
         "ModelExchangeFMU",
         "Multiplier",
         "NewtonAnderson",
+        "NewtonOperator",
         "Norm",
         "ODE",
         "PID",
@@ -206,6 +207,7 @@
         "SinusoidalPhaseNoiseSource",
         "SinusoidalSource",
         "Source",
+        "SparseLinearDAE",
         "Sqrt",
         "SquareWaveSource",
         "StateSpace",
@@ -299,6 +301,7 @@
         "ModelExchangeFMU",
         "Multiplier",
         "NewtonAnderson",
+        "NewtonOperator",
         "Norm",
         "ODE",
         "PID",
@@ -327,6 +330,7 @@
         "SinusoidalPhaseNoiseSource",
         "SinusoidalSource",
         "Source",
+        "SparseLinearDAE",
         "Spectrum",
         "Sqrt",
         "SquareWaveSource",
