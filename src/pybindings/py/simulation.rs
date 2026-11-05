@@ -730,6 +730,13 @@ impl PySimulation {
         Ok(stats_to_dict(&stats, false))
     }
 
+    /// Whether the run that started at `start_time` over `duration` takes another
+    /// step, the loop bound of the chunked streaming run.
+    #[pyo3(signature = (start_time, duration, adaptive=true))]
+    fn run_continues(&self, start_time: f64, duration: f64, adaptive: bool) -> bool {
+        self.inner.borrow().run_continues(start_time, duration, adaptive)
+    }
+
     /// Run with streaming output — calls func_callback at tickrate Hz.
     #[pyo3(signature = (duration=10.0, reset=false, adaptive=true, tickrate=10.0, func_callback=None))]
     fn run_streaming(

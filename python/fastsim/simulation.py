@@ -323,7 +323,7 @@ class Simulation:
         chunk = duration / max(1.0, tickrate)
         t = t0
 
-        while sim.active and sim.time < t_end:
+        while sim.run_continues(t0, duration, adaptive):
             target = min(t + chunk, t_end)
             w0 = time.perf_counter()
             sim.run_until(target, t_end, adaptive)

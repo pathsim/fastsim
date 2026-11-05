@@ -143,23 +143,26 @@ pub fn delay(tau: f64, sampling_period: f64) -> BlockRef {
         b.sample_fn = Some(Box::new(move |blk, _t, _dt| {
             if *flag_samp.borrow() {
                 *flag_samp.borrow_mut() = false;
-                let u = blk.inputs._data[0];
-                let r = ring_samp.borrow_mut();
-                r.push_back(u);
-                // Keep n_samples + 1 entries: the sample just taken plus the
-                // n_samples still in flight, so `front()` is the one taken
-                // n_samples periods ago — a delay of exactly
-                // n_samples * sampling_period == tau. Trimming to n_samples
-                // instead drops one period and delays by tau - sampling_period.
-                while r.len() > n_samples + 1 { r.pop_front(); }
+                ring_samp.borrow_mut().push_back(blk.inputs._data[0]);
             }
         }));
 
+        // The sampling event publishes the delayed sample before the new input
+        // is evaluated (pathsim 0.28): it drops the oldest of the n_samples + 1
+        // entries, so `front()` is the sample taken n_samples periods ago, a
+        // delay of exactly n_samples * sampling_period == tau. The sample at the
+        // end of the step then appends the input, which may already depend on
+        // the published output through feedback.
         use crate::events::schedule::Schedule;
         let flag_evt = sample_flag.clone();
+        let ring_evt = ring.clone();
         let evt = Schedule::new(
             0.0, None, sampling_period,
-            Some(Box::new(move |_t| { *flag_evt.borrow_mut() = true; })),
+            Some(Box::new(move |_t| {
+                let r = ring_evt.borrow_mut();
+                if r.len() > n_samples { r.pop_front(); }
+                *flag_evt.borrow_mut() = true;
+            })),
             crate::constants::TOLERANCE,
         );
         b.events.push(Rc::new(FastCell::new(evt)));

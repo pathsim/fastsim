@@ -813,11 +813,11 @@ const LICENSE_BANNER: &str = "\
 
 /// Generate the full set of C files a build needs, named for the file each
 /// becomes on disk. Every model is emitted through the struct (`model_t`) API.
-/// `Layout::Compact` yields `model.h` (the `model_t` typedef, dimensions,
-/// `<NAME>_SIG_*` ids, and entry-point prototypes) + `model.c`; `Layout::Library`
-/// additionally splits out `solver.{c,h}` (the tableau-driven integrator) and, under
-/// `Structure::Hierarchical`, `blocks.{c,h}` (the per-block `<name>_blk_i_alg` /
-/// `<name>_blk_i_deriv` functions). Every extern symbol and include guard is
+/// `Layout::Compact` yields `<name>.h` (the `<name>_t` typedef, dimensions,
+/// `<NAME>_SIG_*` ids, and entry-point prototypes) + `<name>.c`; `Layout::Library`
+/// additionally splits out `<name>_solver.{c,h}` (the tableau-driven integrator) and,
+/// under `Structure::Hierarchical`, `<name>_blocks.{c,h}` (the per-block
+/// `<name>_blk_i_alg` / `<name>_blk_i_deriv` functions). Every extern symbol and include guard is
 /// prefixed with the model name; see `doc/codegen.md` for the emitted-API contract.
 pub fn generate(module: &Module, opts: &CodegenOptions) -> R<Vec<GeneratedFile>> {
     reject_global_events(module)?;

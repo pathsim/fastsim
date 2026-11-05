@@ -7,6 +7,7 @@
 
 use std::rc::Rc;
 
+use crate::simulation::run_continues;
 use crate::ssa::tape::InterpretedFn;
 use super::splice::WriteTarget;
 use super::{assemble_sim_event, CompiledEvent};
@@ -478,8 +479,7 @@ impl CompiledSimulation {
     /// primitive (explicit RK, implicit RK with the native symbolic Jacobian, and
     /// tableau-less implicit). Uses `*Solver::integrate`'s initial-step heuristic
     /// and adaptive `dt` control, but `Simulation::run`'s loop bound and end-time
-    /// semantics (`while time < t_end`; adaptive lands exactly on `t_end`,
-    /// fixed-step ends within one step past it) — a compiled run must end where
+    /// semantics (`run_continues`) — a compiled run must end where
     /// the interpreted run of the same model ends. Note the standalone
     /// `integrate()` itself has a stricter no-overshoot contract (issue #26);
     /// that contract is deliberately NOT this one.
@@ -545,16 +545,11 @@ impl CompiledSimulation {
             );
         }
 
-        // Loop bound — the single semantic source of truth is `Simulation::run`
-        // (`while self.time < end_time`), which `run` documents this loop as
-        // mirroring: a fixed-step run takes the first step that reaches or
-        // passes `t_end` (final time in `[t_end, t_end + dt)`, pathsim parity),
-        // an adaptive run lands exactly on `t_end` via the overshoot clamp
-        // below. The previous `time < t_end + dt` bound took one full step
-        // MORE than the interpreted engine on the same model — compiled and
-        // interpreted trajectories must end identically.
+        // Loop bound shared with `Simulation::run` (`run_continues`): compiled
+        // and interpreted trajectories must end identically. An adaptive run
+        // lands exactly on `t_end` via the overshoot clamp below.
         let mut time = t_start;
-        while time < t_end {
+        while run_continues(time, t_start, duration, adaptive) {
             // `rhs` (and `jac`) borrow `self.fused`; scope them to the step so the
             // recording push below can borrow `self.rec_*` mutably. The RHS writes
             // straight into the caller-owned `f_buf` via `call_into` — the marketed
@@ -687,10 +682,11 @@ impl CompiledSimulation {
             .unwrap_or_else(|| rkbs32_factory(self.atol, self.rtol));
         let mut s = factory(&self.x);
         let dt_min = 1e-12;
-        let t_end = self.time + duration;
+        let t_start = self.time;
+        let t_end = t_start + duration;
         let dt_max = t_end.max(self.dt);
         let mut dt = self.dt;
-        let mut time = self.time;
+        let mut time = t_start;
         let n_state = self.n_state;
 
         // Implicit-solver scratch (unused for explicit methods).
@@ -744,15 +740,14 @@ impl CompiledSimulation {
         // (issue #47) — the common no-event step no longer clones `M` each time.
         let mut m_step = shared.borrow().m.clone();
 
-        // Loop bound + end-time semantics: mirror `Simulation::run` exactly like
-        // the no-event loop above — adaptive runs clamp the last step onto
-        // `t_end`, fixed-step runs take the first step that reaches or passes it.
-        // A model must end at the same time whether or not it happens to contain
-        // block-internal events (and whether or not it was compiled).
+        // Loop bound shared with `Simulation::run` (`run_continues`), like the
+        // no-event loop above: a model must end at the same time whether or not
+        // it happens to contain block-internal events (and whether or not it was
+        // compiled).
         let evals = std::cell::Cell::new(0usize);
         let (mut accepted, mut rejected) = (0usize, 0usize);
         let mut iters = 0usize;
-        while time < t_end {
+        while run_continues(time, t_start, duration, adaptive) {
             iters += 1;
             if iters > 50_000_000 {
                 break; // runaway guard (e.g. an event firing every step)
@@ -852,7 +847,7 @@ impl CompiledSimulation {
             accepted += 1;
             let mem_now = shared.borrow().m.clone();
             self.record_step(time, &s.x, &mem_now, false);
-            tracker.update(((time - (t_end - duration)) / duration).clamp(0.0, 1.0), true);
+            tracker.update(((time - t_start) / duration).clamp(0.0, 1.0), true);
 
             dt = if adaptive {
                 scale.map(|sc| (sc * dt).clamp(dt_min, dt_max)).unwrap_or(dt)

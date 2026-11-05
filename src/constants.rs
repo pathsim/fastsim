@@ -23,6 +23,11 @@ pub const SIM_TIMESTEP: f64 = 0.01;
 pub const SIM_TIMESTEP_MIN: f64 = 1e-16;
 pub const SIM_ITERATIONS_MAX: usize = 200;
 
+/// Relative tolerance at which a fixed-step run counts its duration as covered
+/// and stops, so `duration = n * dt` takes exactly `n` steps despite rounding
+/// (pathsim `Simulation._run_loop`, `np.isclose(..., rtol=1e-12)`).
+pub const SIM_END_RTOL: f64 = 1e-12;
+
 /// Max number of shooting iterations in `Simulation::periodic_steady_state`.
 /// Anderson-accelerated shooting typically converges in 5–15 iterations on
 /// smooth periodic problems; 50 leaves headroom for stiff or weakly-damped

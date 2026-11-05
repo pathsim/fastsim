@@ -1228,5 +1228,26 @@ mod tests {
             c3.time(),
             sim3.time
         );
+
+        // -- fixed-step, aligned end (`dur = 10 * dt`): no step past `t_end`,
+        //    without and with events --
+        for (name, with_events) in [("endtime_al", false), ("endtime_al_evt", true)] {
+            let src = sinusoidal_source(1.0, 1.0, 0.0);
+            let sh = sample_hold(0.25, 0.0);
+            let i4 = integrator(0.0);
+            let (blocks, conns) = if with_events {
+                (vec![src.clone(), sh.clone(), i4.clone()], vec![conn(&src, &sh), conn(&sh, &i4)])
+            } else {
+                (vec![src.clone(), i4.clone()], vec![conn(&src, &i4)])
+            };
+            let mut sim4 = Simulation::with_defaults(blocks, conns);
+            sim4.dt = 0.1;
+            let mut c4 = compile(&module_from_sim(&sim4, name)).unwrap();
+            c4.dt = 0.1;
+            sim4.run(dur, false, false);
+            c4.run(dur, true, false);
+            assert!((sim4.time - dur).abs() < 1e-9, "{name}: interpreted end {}", sim4.time);
+            assert!((c4.time() - dur).abs() < 1e-9, "{name}: compiled end {}", c4.time());
+        }
     }
 }

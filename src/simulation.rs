@@ -1891,6 +1891,13 @@ impl Simulation {
     // Run methods
     // ==================================================================================
 
+    /// Whether the active run that started at `start_time` over `duration` takes
+    /// another step: the loop bound of every run variant, see [`run_continues`].
+    pub fn run_continues(&self, start_time: f64, duration: f64, adaptive: bool) -> bool {
+        self._active
+            && run_continues(self.time, start_time, duration, adaptive && self.engine.is_adaptive)
+    }
+
     /// Adaptive step-size update shared by every run loop: reset to the nominal
     /// `dt` when there is no error estimate, rescale by `scale`, clamp to the next
     /// event and to `end_time`, then to the `[dt_min, dt_max]` bounds. Returns the
@@ -1938,7 +1945,7 @@ impl Simulation {
         self._sample(self.time, dt);
 
         // Main simulation loop
-        while self.time < end_time && self._active {
+        while self.run_continues(start_time, duration, is_adaptive) {
             let (success, error_norm, scale, evals, solver_its) =
                 self.timestep(Some(dt), is_adaptive);
 
@@ -2026,7 +2033,7 @@ impl Simulation {
         // Step until the chunk boundary. A chunk may overshoot `target_time`
         // slightly (one step); the next chunk continues from there. Only the
         // true `end_time` is enforced exactly via overshoot prevention.
-        while self.time < target_time && self._active {
+        while self.time < target_time && self.run_continues(run_t0, total_dur, is_adaptive) {
             let (success, error_norm, scale, evals, solver_its) =
                 self.timestep(Some(dt), is_adaptive);
 
@@ -2079,7 +2086,7 @@ impl Simulation {
         self._resolve_initial_events();
         self._sample(self.time, dt);
 
-        while self.time < end_time && self._active {
+        while self.run_continues(start_time, duration, is_adaptive) {
             let (success, error_norm, scale, _, _) = self.timestep(Some(dt), is_adaptive);
 
             if is_adaptive {
@@ -2124,13 +2131,13 @@ impl Simulation {
 
         let mut last_tick = Instant::now();
 
-        while self.time < end_time && self._active {
+        while self.run_continues(start_time, duration, is_adaptive) {
             // Target simulation time based on wall clock
             let wall_elapsed = wall_start.elapsed().as_secs_f64();
             let target_time = start_time + wall_elapsed * speed;
 
             // Advance simulation until caught up
-            while self.time < target_time.min(end_time) && self._active {
+            while self.time < target_time && self.run_continues(start_time, duration, is_adaptive) {
                 let (_success, error_norm, scale, _, _) = self.timestep(Some(dt), is_adaptive);
 
                 if is_adaptive {
@@ -2151,6 +2158,16 @@ impl Simulation {
 
         callback(1.0, true, dt);
     }
+}
+
+/// Whether a run over `[start_time, start_time + duration]` takes another step from
+/// `time`, the loop bound of the interpreted and the compiled runs. An adaptive run
+/// lands exactly on the end through the overshoot clamp. A fixed-step run stops once
+/// it has covered the duration up to rounding, so `duration = n * dt` takes exactly
+/// `n` steps, and otherwise ends on the first step past the end (pathsim parity).
+pub fn run_continues(time: f64, start_time: f64, duration: f64, adaptive: bool) -> bool {
+    time < start_time + duration
+        && (adaptive || (time - start_time - duration).abs() > SIM_END_RTOL * duration.abs())
 }
 
 // ==================================================================================
@@ -2181,6 +2198,22 @@ mod tests {
         let stats = sim.run(1.0, false, false);
         assert!(stats.total_steps > 0);
         assert!((sim.time - 1.0).abs() < 0.02);
+    }
+
+    #[test]
+    fn test_fixed_run_endpoint() {
+        // pathsim 0.27.1: an aligned endpoint takes exactly `duration / dt` steps,
+        // a non-aligned one ends on the first full step past it.
+        for (dt, duration, endpoint, steps) in [
+            (0.1, 1.0, 1.0, 10), (0.01, 10.0, 10.0, 1000), (0.2, 2.0, 2.0, 10),
+            (0.3, 1.0, 1.2, 4), (2.0, 1.0, 2.0, 1), (0.1, 0.05, 0.1, 1),
+        ] {
+            let mut sim = Simulation::with_defaults(Vec::new(), Vec::new());
+            sim.dt = dt;
+            let stats = sim.run(duration, false, false);
+            assert_eq!(stats.total_steps, steps, "dt={dt} duration={duration}");
+            assert!((sim.time - endpoint).abs() < 1e-9, "dt={dt} duration={duration} t={}", sim.time);
+        }
     }
 
     #[test]

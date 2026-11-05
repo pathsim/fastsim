@@ -34,7 +34,8 @@ REQUIRED_SUBMODULES = ["blocks", "events", "solvers"]
 
 # pathsim internals with no fastsim counterpart. Listed so this test fails if
 # one ever gains one and nobody notices, rather than silently staying absent.
-KNOWN_ABSENT = {"Duplex", "LoggerManager", "metadata", "optim", "utils"}
+# `Carrier` and `Vector` (pathsim 0.30 carrier ports) are not native yet.
+KNOWN_ABSENT = {"Carrier", "Duplex", "LoggerManager", "metadata", "optim", "utils", "Vector"}
 
 
 @pytest.mark.parametrize("name", REQUIRED_SUBMODULES)
