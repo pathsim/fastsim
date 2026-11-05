@@ -13,10 +13,10 @@ use crate::error::SimError;
 use crate::blocks::blockops::{
     mem_read_alg_graph, EventKindSpec, EventSpec, MemSpec, MemTarget,
 };
-use crate::constants::INTERPOLATION_TIME_TOL;
 use crate::events::schedule::Schedule;
 use crate::ssa::build::{Builder, GraphBuilder};
 use crate::ssa::graph::{Graph, InputSignature};
+use crate::utils::adaptivebuffer::AdaptiveBuffer;
 use crate::utils::fastcell::FastCell;
 use crate::utils::register::Register;
 
@@ -63,58 +63,16 @@ pub fn delay(tau: f64, sampling_period: f64) -> BlockRef {
     b.len_fn = Some(Box::new(|_| 0));
 
     if sampling_period <= 0.0 {
-        // Continuous mode: adaptive rolling buffer with interpolation
-        // Buffer stores (time, value) pairs, interpolates at t - tau
-        let buffer: Rc<FastCell<Vec<(f64, f64)>>> = Rc::new(FastCell::new(Vec::new()));
+        // Continuous mode: rolling buffer of all channels, interpolated at t - tau
+        let buffer = Rc::new(FastCell::new(AdaptiveBuffer::new(tau)));
         let buf_upd = buffer.clone();
         let buf_samp = buffer.clone();
         let buf_reset = buffer.clone();
 
-        // update: interpolate buffer at t - tau
-        b.update_fn = Some(Box::new(move |blk, t| {
-            let target = t - tau;
-            let buf = buf_upd.borrow();
-            if buf.is_empty() || target < 0.0 {
-                blk.outputs._data[0] = 0.0;
-                return;
-            }
-            // Binary search for interpolation point
-            let n = buf.len();
-            if n == 1 || target <= buf[0].0 {
-                blk.outputs._data[0] = buf[0].1;
-                return;
-            }
-            if target >= buf[n - 1].0 {
-                blk.outputs._data[0] = buf[n - 1].1;
-                return;
-            }
-            // Find interval [i, i+1] containing target
-            let mut lo = 0;
-            let mut hi = n - 1;
-            while hi - lo > 1 {
-                let mid = (lo + hi) / 2;
-                if buf[mid].0 <= target { lo = mid; } else { hi = mid; }
-            }
-            // Linear interpolation
-            let (t0, v0) = buf[lo];
-            let (t1, v1) = buf[hi];
-            let frac = if (t1 - t0).abs() > INTERPOLATION_TIME_TOL { (target - t0) / (t1 - t0) } else { 0.0 };
-            blk.outputs._data[0] = v0 + frac * (v1 - v0);
-        }));
+        b.update_fn = Some(Box::new(move |blk, t| buf_upd.borrow().get(t, &mut blk.outputs)));
 
-        // sample: add current (t, u) to buffer, prune old entries
-        b.sample_fn = Some(Box::new(move |blk, t, _dt| {
-            let u = blk.inputs._data[0];
-            let buf = buf_samp.borrow_mut();
-            buf.push((t, u));
-            // Prune entries older than t - tau (keep one extra for interpolation)
-            let cutoff = t - tau - crate::constants::DELAY_PRUNE_MARGIN;
-            while buf.len() > 2 && buf[0].0 < cutoff {
-                buf.remove(0);
-            }
-        }));
+        b.sample_fn = Some(Box::new(move |blk, t, _dt| buf_samp.borrow_mut().add(t, &blk.inputs._data)));
 
-        // reset: clear buffer
         b.reset_fn = Some(Box::new(move |blk| {
             blk.inputs.reset();
             blk.outputs.reset();
@@ -122,40 +80,40 @@ pub fn delay(tau: f64, sampling_period: f64) -> BlockRef {
         }));
 
     } else {
-        // Discrete mode: ring buffer with scheduled sampling
-        use std::collections::VecDeque;
-
+        // Discrete mode: ring of input frames with scheduled sampling, starting
+        // with n_samples scalar zeros (pathsim `deque([0.0] * n)`)
         let n_samples = (tau / sampling_period).round().max(1.0) as usize;
-        let mut ring: VecDeque<f64> = VecDeque::with_capacity(n_samples + 1);
-        for _ in 0..n_samples { ring.push_back(0.0); }
+        let zeros = move || (0..n_samples).map(|_| vec![0.0]).collect::<VecDeque<Vec<f64>>>();
 
-        let ring = Rc::new(FastCell::new(ring));
+        let ring = Rc::new(FastCell::new(zeros()));
         let ring_upd = ring.clone();
         let ring_samp = ring.clone();
+        let ring_evt = ring.clone();
+        let ring_reset = ring.clone();
 
         let sample_flag = Rc::new(FastCell::new(false));
         let flag_samp = sample_flag.clone();
+        let flag_evt = sample_flag.clone();
 
         b.update_fn = Some(Box::new(move |blk, _t| {
-            blk.outputs._data[0] = ring_upd.borrow().front().copied().unwrap_or(0.0);
+            if let Some(frame) = ring_upd.borrow().front() {
+                blk.outputs.update_from_array(frame);
+            }
         }));
 
         b.sample_fn = Some(Box::new(move |blk, _t, _dt| {
             if *flag_samp.borrow() {
                 *flag_samp.borrow_mut() = false;
-                ring_samp.borrow_mut().push_back(blk.inputs._data[0]);
+                ring_samp.borrow_mut().push_back(blk.inputs._data.clone());
             }
         }));
 
         // The sampling event publishes the delayed sample before the new input
         // is evaluated (pathsim 0.28): it drops the oldest of the n_samples + 1
-        // entries, so `front()` is the sample taken n_samples periods ago, a
-        // delay of exactly n_samples * sampling_period == tau. The sample at the
-        // end of the step then appends the input, which may already depend on
-        // the published output through feedback.
-        use crate::events::schedule::Schedule;
-        let flag_evt = sample_flag.clone();
-        let ring_evt = ring.clone();
+        // frames, so `front()` is the one taken n_samples periods ago, a delay
+        // of exactly n_samples * sampling_period == tau. The sample at the end
+        // of the step then appends the input, which may already depend on the
+        // published output through feedback.
         let evt = Schedule::new(
             0.0, None, sampling_period,
             Some(Box::new(move |_t| {
@@ -167,59 +125,43 @@ pub fn delay(tau: f64, sampling_period: f64) -> BlockRef {
         );
         b.events.push(Rc::new(FastCell::new(evt)));
 
-        // IR (Memory + Event): a `ring` slot of n_samples; each sampling period
-        // shifts (drop oldest, push u at the back). Output y = ring[0] (oldest).
-        // The emitted ring holds n_samples + 1 slots for the same reason the
-        // runtime one does: the newest sample plus the n_samples in flight, so
-        // the front is exactly n_samples periods old.
+        // IR (Memory + Event), shape-poly in the input width `ni`: a `ring` slot
+        // of n_samples + 1 frames of `ni` values, the same frames the runtime
+        // ring holds. Each sampling period shifts by one frame (drop the oldest,
+        // append u), the output is the oldest frame.
         let ring_len = n_samples + 1;
-        {
-            let alg = {
-                let cell = RefCell::new(Graph::new(InputSignature::from_named_sizes([(format!("mem{}", 0u32), ring_len)])));
-                let y = {
-                    let gb = GraphBuilder::new(&cell);
-                    gb.input(0) // ring front (oldest)
-                };
-                let mut g = cell.into_inner();
-                g.outputs.push(y);
-                g
-            };
+        b.set_discrete_lazy("Delay", move |ni| {
+            let alg = mem_read_alg_graph(0, ni);
             let effect = {
                 let cell = RefCell::new(Graph::new(InputSignature::from_named_sizes([
-                    (format!("mem{}", 0u32), ring_len),
-                    ("u".to_string(), 1),
+                    (format!("mem{}", 0u32), ring_len * ni),
+                    ("u".to_string(), ni),
                 ])));
                 let outs = {
                     let gb = GraphBuilder::new(&cell);
-                    let ring: Vec<u32> = (0..ring_len as u32).map(|i| gb.input(i)).collect();
-                    let u = gb.input(ring_len as u32);
-                    let mut outs: Vec<u32> = ring[1..].to_vec(); // drop the oldest
-                    outs.push(u); // new back = u
+                    let n_mem = (ring_len * ni) as u32;
+                    let mut outs: Vec<u32> = (ni as u32..n_mem).map(|i| gb.input(i)).collect();
+                    outs.extend((n_mem..n_mem + ni as u32).map(|i| gb.input(i)));
                     outs
                 };
                 let mut g = cell.into_inner();
                 g.outputs = outs;
                 g
             };
-            let targets: Vec<MemTarget> = (0..ring_len as u32).map(|i| MemTarget { slot: 0, offset: i }).collect();
-            let memory = vec![MemSpec { name: "ring".into(), init: vec![0.0; ring_len] }];
+            let targets: Vec<MemTarget> = (0..(ring_len * ni) as u32).map(|i| MemTarget { slot: 0, offset: i }).collect();
+            let memory = vec![MemSpec { name: "ring".into(), init: vec![0.0; ring_len * ni] }];
             let events = vec![EventSpec {
                 kind: EventKindSpec::SchedulePeriodic { period: sampling_period, phase: 0.0 },
                 effect,
                 targets,
             }];
-            b.set_discrete("Delay", alg, memory, events);
-        }
+            Some((alg, memory, events))
+        });
 
-        // Reset: clear ring and refill with n zeros (pathsim parity with
-        // Delay.reset: self._ring.clear(); self._ring.extend([0.0] * self._n)).
-        let ring_reset = ring.clone();
         b.reset_fn = Some(Box::new(move |blk| {
             blk.inputs.reset();
             blk.outputs.reset();
-            let r = ring_reset.borrow_mut();
-            r.clear();
-            for _ in 0..n_samples { r.push_back(0.0); }
+            *ring_reset.borrow_mut() = zeros();
         }));
     }
 

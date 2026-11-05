@@ -1,6 +1,6 @@
 [package]
 name = "fastsim"
-version = "0.28.4"
+version = "0.28.5"
 edition = "2021"
 description = "A fast, Rust-based block-diagram system simulation framework — drop-in replacement for pathsim"
 license = "PolyForm-Noncommercial-1.0.0"
@@ -21,7 +21,7 @@ pyo3 = { version = "0.29", features = ["extension-module", "num-complex"], optio
 # minijinja is the pure-Rust Jinja2 engine.
 minijinja = "2"
 roxmltree = "0.20"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 thiserror = "2"
 
 # Native-only capabilities. Everything else compiles for every target (incl.

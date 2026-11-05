@@ -31,10 +31,9 @@ impl FmuArchive {
 
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i)?;
-            let raw = entry
-                .enclosed_name()
-                .ok_or_else(|| FmiError::InvalidArchive(format!("unsafe path: {}", entry.name())))?
-                .to_owned();
+            let Some(raw) = entry.enclosed_name() else {
+                return Err(FmiError::InvalidArchive(format!("unsafe path: {}", entry.name()?)));
+            };
             validate_path(&raw)?;
             let out_path = dir.path().join(&raw);
 

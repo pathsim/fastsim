@@ -164,7 +164,28 @@ class TestSISOBlocks(unittest.TestCase):
         run_siso_block_test(self,
             lambda: fastsim.blocks.Delay(tau=0.1),
             lambda: pathsim.blocks.Delay(tau=0.1),
-            label="Delay", tol=1e-2)
+            label="Delay", tol=1e-9)
+
+    def test_delay_channels(self):
+        # Two channels through one Delay, continuous and discrete, compared
+        # sample by sample on a fixed step.
+        def run(m, params):
+            srcs = [m.blocks.Source(lambda t: np.sin(2 * np.pi * t)),
+                    m.blocks.Source(lambda t: np.cos(3 * np.pi * t))]
+            dly, sco = m.blocks.Delay(**params), m.blocks.Scope()
+            conns = [m.Connection(s, dly[i]) for i, s in enumerate(srcs)]
+            conns += [m.Connection(dly[i], sco[i]) for i in range(2)]
+            sim = m.Simulation([*srcs, dly, sco], conns, dt=0.01, log=False)
+            sim.run(1.0, adaptive=False)
+            return sco.read()
+
+        for params in (dict(tau=0.1), dict(tau=0.1, sampling_period=0.05)):
+            with self.subTest(**params):
+                t_fs, d_fs = run(fastsim, params)
+                t_ps, d_ps = run(pathsim, params)
+                np.testing.assert_allclose(t_fs, t_ps, atol=1e-12)
+                np.testing.assert_allclose(d_fs, d_ps, atol=1e-12)
+                self.assertGreater(np.max(np.abs(d_fs[1])), 0.5)
 
     def test_clip(self):
         run_siso_block_test(self,

@@ -164,13 +164,10 @@ pub const FILTER_POLY_REAL_TOL: f64 = 1e-9;
 // ======================================================================
 
 
-/// Threshold for the sample-time gap `|t1 − t0|` in linear interpolation.
-/// Below this the interpolator treats the two samples as coincident.
-pub const INTERPOLATION_TIME_TOL: f64 = 1e-15;
-
-/// Extra time margin kept when pruning the continuous-time `Delay` ring buffer,
-/// so the oldest sample needed for interpolation at `t - tau` is never dropped.
-pub const DELAY_PRUNE_MARGIN: f64 = 0.01;
+/// Samples the continuous `Delay` buffer keeps beyond the delay when pruning,
+/// so the interpolation at `t - tau` always has its bracket (pathsim
+/// `AdaptiveBuffer.ns`).
+pub const DELAY_BUFFER_SAFETY: usize = 5;
 
 // ======================================================================
 // JIT
