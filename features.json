@@ -1,5 +1,5 @@
 {
-  "generated": "2026-11-13T10:41:21.828376",
+  "generated": "2026-11-14T09:55:25.169479",
   "categories": [
     {
       "name": "Solvers",
@@ -128,7 +128,6 @@
         "ButterworthBandstopFilter",
         "ButterworthHighpassFilter",
         "ButterworthLowpassFilter",
-        "Carrier",
         "ChirpPhaseNoiseSource",
         "ChirpSource",
         "Clip",
@@ -224,7 +223,6 @@
         "TransferFunctionPRC",
         "TransferFunctionZPG",
         "TriangleWaveSource",
-        "Vector",
         "WhiteNoise",
         "Wrapper",
         "ZeroOrderHold",
@@ -253,7 +251,6 @@
         "ButterworthBandstopFilter",
         "ButterworthHighpassFilter",
         "ButterworthLowpassFilter",
-        "Carrier",
         "ChirpPhaseNoiseSource",
         "ChirpSource",
         "Clip",
@@ -351,7 +348,6 @@
         "TransferFunctionPRC",
         "TransferFunctionZPG",
         "TriangleWaveSource",
-        "Vector",
         "WhiteNoise",
         "Wrapper",
         "ZeroOrderHold",
